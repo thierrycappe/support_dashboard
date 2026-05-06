@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "items": {
+    "ai-memory-skeleton": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:03ff48a8",
+      "files": [
+        "AI_MEMORY/README.md",
+        "AI_MEMORY/overview.md"
+      ]
+    },
+    "product-md-skeleton": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:058696eb",
+      "files": [
+        "PRODUCT.md"
+      ]
+    },
+    "architecture-md-skeleton": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:858df943",
+      "files": [
+        "ARCHITECTURE.md"
+      ]
+    },
+    "design-md-skeleton": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:a71b7ba2",
+      "files": [
+        "DESIGN.md"
+      ]
+    },
+    "security-md-skeleton": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:92663a1e",
+      "files": [
+        "SECURITY.md"
+      ]
+    },
+    "contributing-md-skeleton": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:052d3284",
+      "files": [
+        "CONTRIBUTING.md"
+      ]
+    },
+    "playwright-config-template": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:205b3fe4",
+      "files": [
+        "playwright.config.ts",
+        "e2e/smoke/.gitkeep",
+        "e2e/form/.gitkeep",
+        "e2e/regression/.gitkeep",
+        "e2e/helpers/.gitkeep",
+        "e2e/setup/.gitkeep"
+      ]
+    },
+    "vitest-config-template": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:f4fa80fb",
+      "files": [
+        "vitest.config.ts",
+        "tests/setup.ts",
+        "tests/components/.gitkeep",
+        "tests/unit/.gitkeep",
+        "tests/integration/.gitkeep"
+      ]
+    },
+    "scenarios-skeleton": {
+      "applied_at": "2026-05-06T18:06:51Z",
+      "fingerprint": "sha256:f428ebbf",
+      "files": [
+        "scenarios/.gitkeep",
+        "scenarios/README.md",
+        "scenarios/_TEMPLATE.md",
+        "scripts/check-scenario-drift.test.ts",
+        "scripts/check-scenario-drift.ts"
+      ]
+    }
+  }
+}
