@@ -7,6 +7,7 @@ import {
   ingestFeedbackTicket,
 } from '@/lib/feedback/ingest'
 import { hasDatabaseUrl } from '@/lib/db'
+import { notifyTicketCreated } from '@/lib/notifications/pushover'
 
 export async function POST(request: Request) {
   const token = getBearerToken(request.headers)
@@ -45,5 +46,9 @@ export async function POST(request: Request) {
   }
 
   const result = await ingestFeedbackTicket(parsed.data)
+  if (result.created) {
+    await notifyTicketCreated({ payload: parsed.data, result })
+  }
+
   return NextResponse.json(result, { status: result.created ? 201 : 200 })
 }
