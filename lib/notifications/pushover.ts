@@ -127,6 +127,24 @@ function buildPushoverBody(
   return body
 }
 
+export async function sendPushoverMessage({
+  config,
+  message,
+  fetchImpl = fetch,
+}: {
+  config: PushoverConfig
+  message: PushoverMessage
+  fetchImpl?: FetchLike
+}): Promise<Response> {
+  return fetchImpl(PUSHOVER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: buildPushoverBody(config, message),
+  })
+}
+
 export async function notifyTicketCreated({
   payload,
   result,
@@ -140,13 +158,7 @@ export async function notifyTicketCreated({
   const message = buildTicketCreatedPushoverMessage(payload, result, env)
 
   try {
-    const response = await fetchImpl(PUSHOVER_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: buildPushoverBody(config, message),
-    })
+    const response = await sendPushoverMessage({ config, message, fetchImpl })
 
     if (!response.ok) {
       const body = await response.text().catch(() => '')
