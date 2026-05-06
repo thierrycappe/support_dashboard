@@ -1,8 +1,12 @@
 import type { DashboardData } from '@/lib/feedback/dashboard'
 import { getAllowedAdminEmails } from '@/lib/auth/admin'
+import {
+  getResendConfig,
+  sendResendEmail,
+  type ResendEmail,
+} from '@/lib/email/resend'
 import { getTowerPublicUrl } from '@/lib/notifications/pushover'
 
-const RESEND_EMAILS_URL = 'https://api.resend.com/emails'
 const MAX_TEXT_LENGTH = 8000
 const MAX_LISTED_APPS = 6
 const MAX_LISTED_TICKETS = 6
@@ -27,13 +31,7 @@ export interface ResendEmailConfig {
   to: string[]
 }
 
-export interface DailyReportEmail {
-  from: string
-  to: string[]
-  subject: string
-  text: string
-  html: string
-}
+export type DailyReportEmail = ResendEmail
 
 export type EmailDeliveryResult = 'disabled' | 'sent' | 'failed'
 
@@ -106,8 +104,7 @@ function list(items: string[]): string {
 export function getDailyReportEmailConfig(
   env: Env = process.env,
 ): ResendEmailConfig | null {
-  const apiKey = env.RESEND_API_KEY?.trim()
-  const from = env.RESEND_FROM?.trim() || env.SUPPORT_TOWER_DIGEST_EMAIL_FROM?.trim()
+  const resend = getResendConfig(env)
   const to = (
     env.SUPPORT_TOWER_DIGEST_EMAIL_TO?.trim()
       ? env.SUPPORT_TOWER_DIGEST_EMAIL_TO
@@ -117,8 +114,8 @@ export function getDailyReportEmailConfig(
     .map((email) => email.trim())
     .filter(Boolean)
 
-  if (!apiKey || !from || to.length === 0) return null
-  return { apiKey, from, to }
+  if (!resend || to.length === 0) return null
+  return { ...resend, to }
 }
 
 export function buildDailyReportEmail(
@@ -197,14 +194,7 @@ export async function sendDailyOpenTicketReport({
   const email = buildDailyReportEmail(data, config, env)
 
   try {
-    const response = await fetchImpl(RESEND_EMAILS_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(email),
-    })
+    const response = await sendResendEmail({ config, email, fetchImpl })
 
     if (!response.ok) {
       const body = await response.text().catch(() => '')

@@ -13,6 +13,7 @@
     "db:push": "drizzle-kit push",
     "auth:hash-password": "tsx scripts/hash-admin-password.ts",
     "auth:seed-admin": "tsx scripts/seed-admin-user.ts",
+    "auth:send-password-reset": "tsx scripts/send-password-reset.ts",
     "scenario:check": "tsx scripts/check-scenario-drift.ts"
   },
   "dependencies": {

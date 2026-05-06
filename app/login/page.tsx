@@ -1,11 +1,15 @@
 import { auth } from '@/auth'
+import Link from 'next/link'
+import type { Route } from 'next'
 import { redirect } from 'next/navigation'
 import { loginAction } from './actions'
+
+const FORGOT_PASSWORD_ROUTE = '/forgot-password' as Route
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>
+  searchParams: Promise<{ error?: string; reset?: string }>
 }) {
   const session = await auth()
   if (session?.user) redirect('/')
@@ -26,6 +30,11 @@ export default async function LoginPage({
               minutes if there were repeated failed attempts.
             </div>
           )}
+          {params.reset === '1' && (
+            <div className="setup-box" role="status">
+              Password updated. Sign in with your new password.
+            </div>
+          )}
           <form className="form" action={loginAction}>
             <div className="field">
               <label htmlFor="email">Email</label>
@@ -43,6 +52,9 @@ export default async function LoginPage({
             <button className="button" type="submit">
               Sign in
             </button>
+            <Link className="subtle" href={FORGOT_PASSWORD_ROUTE}>
+              Forgot password?
+            </Link>
           </form>
         </div>
       </div>

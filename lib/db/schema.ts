@@ -188,3 +188,30 @@ export const supportUsers = pgTable(
     index('support_users_status_idx').on(table.status),
   ],
 )
+
+export const passwordResetTokens = pgTable(
+  'password_reset_tokens',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => supportUsers.id, {
+        onUpdate: 'cascade',
+        onDelete: 'cascade',
+      }),
+    tokenHash: text('token_hash').notNull(),
+    requestedIp: text('requested_ip'),
+    userAgent: text('user_agent'),
+    expiresAt: timestamp('expires_at', { precision: 3 }).notNull(),
+    usedAt: timestamp('used_at', { precision: 3 }),
+    createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('password_reset_tokens_hash_idx').on(table.tokenHash),
+    index('password_reset_tokens_user_created_idx').on(
+      table.userId,
+      table.createdAt,
+    ),
+    index('password_reset_tokens_expires_idx').on(table.expiresAt),
+  ],
+)

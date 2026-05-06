@@ -131,6 +131,19 @@ export async function updateSupportUser(
     .where(eq(supportUsers.id, id))
 }
 
+export async function updateSupportUserPassword(
+  id: string,
+  passwordHash: string,
+): Promise<void> {
+  await getDb()
+    .update(supportUsers)
+    .set({
+      passwordHash,
+      updatedAt: new Date(),
+    })
+    .where(eq(supportUsers.id, id))
+}
+
 export async function deleteSupportUser(id: string): Promise<void> {
   await getDb().delete(supportUsers).where(eq(supportUsers.id, id))
 }
