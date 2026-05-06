@@ -18,13 +18,12 @@ export default async function LoginPage({
           <p className="eyebrow">Support Control Tower</p>
           <h1>Sign in</h1>
           <p className="subtle">
-            Use the admin credentials configured in `.env.local`.
+            Use an authorized administrator account.
           </p>
           {params.error && (
             <div className="setup-box" role="alert">
-              Login failed. For this local dev server, use
-              `admin@example.com` / `admin`. If the page was already open before
-              the server restart, submit the form again with those values.
+              Sign-in failed. Check your email and password, or wait a few
+              minutes if there were repeated failed attempts.
             </div>
           )}
           <form className="form" action={loginAction}>

@@ -1,6 +1,6 @@
 # Security Model
 
-Last updated: YYYY-MM-DD
+Last updated: 2026-05-06
 
 Sits with PRODUCT.md (strategy), ARCHITECTURE.md (patterns), DESIGN.md (visual + UX writing), CONTRIBUTING.md (engineering), CLAUDE.md (AI behaviour). The Cardinal Rule (§2) and Data Classification (§1) are referenced from PRODUCT.md and ARCHITECTURE.md by section name.
 
@@ -70,25 +70,46 @@ Every enforcement story has gaps. State them explicitly. ("All four layers are b
 
 ## 3. Authentication Architecture
 
-Describe every authentication mechanism in use. Include for each: where configured, session strategy, validation rules, hashing parameters, rate-limiting status, account-recovery story.
+The dashboard uses Auth.js with a credentials provider for administrator access.
+There is no public registration flow. Administrators are allow-listed through
+`SUPPORT_DASHBOARD_ADMIN_EMAILS`.
 
-If the system has more than one auth mechanism (e.g., session-based for users + token-based for service callers + magic-link for guests), give each its own subsection and state which routes use which.
+### Admin Login
 
-### Registration
+- Route: `/login`
+- Provider: Auth.js credentials provider
+- Allowed users: comma-separated `SUPPORT_DASHBOARD_ADMIN_EMAILS`, with
+  `SUPPORT_DASHBOARD_ADMIN_EMAIL` retained as a legacy fallback.
+- Password storage: `SUPPORT_DASHBOARD_ADMIN_PASSWORD_HASH` only in production.
+- Hash format: `scrypt-v1$N$r$p$salt$hash`, currently generated with `N=16384`,
+  `r=8`, `p=1`, 64-byte derived keys, and random salts.
+- Plaintext fallback: `SUPPORT_DASHBOARD_ADMIN_PASSWORD` is accepted only outside
+  production for local development.
+- Login throttling: failed admin login attempts are recorded in
+  `auth_login_attempts`; five failed attempts within 15 minutes block the email
+  or IP address for the window.
 
-- Endpoint, validation, hashing, duplicate-email behavior.
-- Email verification: yes / no.
-- Rate limiting: yes / no.
-- Domain restriction: yes / no.
-- Default role assigned at registration.
+### Session Lifetime
 
-### Session lifetime
+- Strategy: Auth.js JWT session.
+- Maximum age: 8 hours.
+- Update age: 1 hour.
+- Logout: `/login` sign-out action invalidates the session and redirects to login.
 
-- Token / cookie strategy, expiry, refresh story, logout behavior.
+### Service-to-Service Ingest Auth
 
-### Authorization model
+- Route: `/api/feedback/ingest`
+- Authentication: `Authorization: Bearer <token>`
+- Preferred configuration: `SUPPORT_TOWER_INGEST_TOKENS_JSON`, a per-source-app
+  token map keyed by app slug.
+- Token comparison: constant-time comparison after resolving the expected token
+  for the submitted app slug.
 
-- Roles, what each role can do, where the role check happens (middleware? per-route? both?).
+### Authorization Model
+
+There is one dashboard role today: administrator. Page access is enforced with
+`auth()` checks in server components and route handlers. The ingest endpoint is
+excluded from page-session auth and uses its own bearer-token check.
 
 ---
 

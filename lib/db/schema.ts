@@ -145,3 +145,22 @@ export const notifications = pgTable(
     index('notifications_created_idx').on(table.createdAt),
   ],
 )
+
+export const authLoginAttempts = pgTable(
+  'auth_login_attempts',
+  {
+    id: text('id').primaryKey(),
+    identifier: text('identifier').notNull(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    success: boolean('success').notNull().default(false),
+    createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  },
+  (table) => [
+    index('auth_login_attempts_identifier_created_idx').on(
+      table.identifier,
+      table.createdAt,
+    ),
+    index('auth_login_attempts_ip_created_idx').on(table.ipAddress, table.createdAt),
+  ],
+)
