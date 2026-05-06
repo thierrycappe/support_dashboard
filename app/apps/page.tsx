@@ -72,11 +72,12 @@ export default async function AppsPage() {
           <h2>Connector contract</h2>
           <p className="subtle">
             External apps should POST to `/api/feedback/ingest` with
-            `Authorization: Bearer SUPPORT_TOWER_INGEST_TOKEN`. The payload
-            includes `app` identity and one `ticket`. `ticket.url` should be
-            the deep link to the original app feedback dashboard; this tower
-            mirrors status and links out, it does not replace the source app
-            workflow.
+            `Authorization: Bearer &lt;app-specific token&gt;`. Tokens are
+            matched to `app.slug` through `SUPPORT_TOWER_INGEST_TOKENS_JSON`, so
+            each source app can be rotated independently. The payload includes
+            `app` identity and one `ticket`. `ticket.url` should be the deep
+            link to the original app feedback dashboard; this tower mirrors
+            status and links out, it does not replace the source app workflow.
           </p>
         </div>
       </div>

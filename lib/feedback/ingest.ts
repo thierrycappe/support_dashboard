@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 import { and, eq } from 'drizzle-orm'
+import { timingSafeEqual } from 'node:crypto'
 import { getDb } from '@/lib/db'
 import { feedbackTickets, sourceApps } from '@/lib/db/schema'
 import type {
@@ -159,4 +160,31 @@ export function getBearerToken(headers: Headers): string | null {
   const value = headers.get('authorization')
   if (!value?.startsWith('Bearer ')) return null
   return value.slice('Bearer '.length).trim()
+}
+
+export function getIngestTokenForApp(
+  appSlug: string,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const tokenMapJson = env.SUPPORT_TOWER_INGEST_TOKENS_JSON?.trim()
+
+  if (tokenMapJson) {
+    const parsed = JSON.parse(tokenMapJson) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('SUPPORT_TOWER_INGEST_TOKENS_JSON must be a JSON object')
+    }
+
+    const value = (parsed as Record<string, unknown>)[appSlug]
+    return typeof value === 'string' && value.trim() ? value : null
+  }
+
+  return env.SUPPORT_TOWER_INGEST_TOKEN?.trim() || null
+}
+
+export function constantTimeTokenEquals(actual: string, expected: string): boolean {
+  const actualBuffer = Buffer.from(actual)
+  const expectedBuffer = Buffer.from(expected)
+
+  if (actualBuffer.length !== expectedBuffer.length) return false
+  return timingSafeEqual(actualBuffer, expectedBuffer)
 }

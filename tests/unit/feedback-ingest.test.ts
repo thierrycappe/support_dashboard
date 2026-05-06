@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { feedbackIngestSchema, getBearerToken } from '@/lib/feedback/ingest'
+import {
+  constantTimeTokenEquals,
+  feedbackIngestSchema,
+  getBearerToken,
+  getIngestTokenForApp,
+} from '@/lib/feedback/ingest'
 
 const validPayload = {
   app: {
@@ -38,5 +43,41 @@ describe('feedback ingest contract', () => {
   it('extracts bearer tokens from authorization headers', () => {
     const headers = new Headers({ authorization: 'Bearer test-token' })
     expect(getBearerToken(headers)).toBe('test-token')
+  })
+
+  it('resolves per-app ingest tokens from the JSON token map', () => {
+    const token = getIngestTokenForApp('sales-portal', {
+      SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({
+        'sales-portal': 'sales-token',
+        csm: 'csm-token',
+      }),
+      SUPPORT_TOWER_INGEST_TOKEN: 'legacy-token',
+    })
+
+    expect(token).toBe('sales-token')
+  })
+
+  it('does not fall back to the legacy shared token when a JSON token map is configured', () => {
+    const token = getIngestTokenForApp('unknown-app', {
+      SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({
+        csm: 'csm-token',
+      }),
+      SUPPORT_TOWER_INGEST_TOKEN: 'legacy-token',
+    })
+
+    expect(token).toBeNull()
+  })
+
+  it('falls back to the legacy shared token when no JSON token map is configured', () => {
+    const token = getIngestTokenForApp('sales-portal', {
+      SUPPORT_TOWER_INGEST_TOKEN: 'legacy-token',
+    })
+
+    expect(token).toBe('legacy-token')
+  })
+
+  it('compares bearer tokens without accepting prefixes', () => {
+    expect(constantTimeTokenEquals('sales-token', 'sales-token')).toBe(true)
+    expect(constantTimeTokenEquals('sales-token-extra', 'sales-token')).toBe(false)
   })
 })
