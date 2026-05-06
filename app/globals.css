@@ -31,7 +31,8 @@ a {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -147,6 +148,10 @@ h1 {
   padding: 18px;
 }
 
+.form-panel {
+  max-width: 680px;
+}
+
 .stat {
   padding: 18px;
 }
@@ -245,6 +250,40 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
+}
+
+.field select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.form-actions,
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--surface);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: var(--surface-subtle);
+}
+
+.icon-button-danger {
+  color: var(--danger);
 }
 
 .setup-box {

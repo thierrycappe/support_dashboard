@@ -71,6 +71,7 @@ describe('admin credential authorization', () => {
       id: 'admin:thierry@example.com',
       email: 'thierry@example.com',
       name: 'Support Tower admin',
+      role: 'ADMIN',
     })
   })
 

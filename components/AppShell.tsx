@@ -1,8 +1,15 @@
 import Link from 'next/link'
-import { Inbox, LayoutDashboard, RadioTower } from 'lucide-react'
+import type { Route } from 'next'
+import { Inbox, LayoutDashboard, RadioTower, Users } from 'lucide-react'
 import { logoutAction } from '@/app/login/actions'
+import { auth } from '@/auth'
 
-export default function AppShell({ children }: { children: React.ReactNode }) {
+const USERS_ROUTE = '/users' as Route
+
+export default async function AppShell({ children }: { children: React.ReactNode }) {
+  const session = await auth()
+  const isAdmin = session?.user?.role === 'ADMIN'
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -21,6 +28,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Inbox size={18} aria-hidden="true" />
             Source apps
           </Link>
+          {isAdmin && (
+            <Link className="nav-link" href={USERS_ROUTE}>
+              <Users size={18} aria-hidden="true" />
+              Users
+            </Link>
+          )}
         </nav>
         <form action={logoutAction} style={{ marginTop: 24 }}>
           <button className="button button-secondary" type="submit">

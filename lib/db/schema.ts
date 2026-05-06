@@ -40,6 +40,10 @@ export const notificationKind = pgEnum('NotificationKind', [
   'SYNC_ERROR',
 ])
 
+export const authUserRole = pgEnum('AuthUserRole', ['ADMIN', 'SUPPORT'])
+
+export const authUserStatus = pgEnum('AuthUserStatus', ['ACTIVE', 'DISABLED'])
+
 export const sourceApps = pgTable(
   'source_apps',
   {
@@ -162,5 +166,25 @@ export const authLoginAttempts = pgTable(
       table.createdAt,
     ),
     index('auth_login_attempts_ip_created_idx').on(table.ipAddress, table.createdAt),
+  ],
+)
+
+export const supportUsers = pgTable(
+  'support_users',
+  {
+    id: text('id').primaryKey(),
+    email: text('email').notNull(),
+    name: text('name').notNull(),
+    role: authUserRole('role').notNull().default('SUPPORT'),
+    status: authUserStatus('status').notNull().default('ACTIVE'),
+    passwordHash: text('password_hash').notNull(),
+    lastLoginAt: timestamp('last_login_at', { precision: 3 }),
+    createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+    updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('support_users_email_idx').on(table.email),
+    index('support_users_role_idx').on(table.role),
+    index('support_users_status_idx').on(table.status),
   ],
 )

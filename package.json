@@ -12,6 +12,7 @@
     "test:run": "vitest run",
     "db:push": "drizzle-kit push",
     "auth:hash-password": "tsx scripts/hash-admin-password.ts",
+    "auth:seed-admin": "tsx scripts/seed-admin-user.ts",
     "scenario:check": "tsx scripts/check-scenario-drift.ts"
   },
   "dependencies": {

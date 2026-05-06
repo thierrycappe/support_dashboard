@@ -54,22 +54,24 @@ The system has two authentication mechanisms.
 ### 3.1 Admin session
 
 - Where configured: `auth.ts` and `app/api/auth/[...nextauth]/route.ts`.
-- Session strategy: Auth.js JWT session with a single credentials provider.
-- Validation rules: email and password must match `SUPPORT_DASHBOARD_ADMIN_EMAIL` and `SUPPORT_DASHBOARD_ADMIN_PASSWORD`.
-- Routes covered: dashboard pages and authenticated feedback APIs.
+- Session strategy: Auth.js JWT session with a database-backed credentials provider.
+- Validation rules: active users in `support_users` authenticate with scrypt password hashes.
+- Bootstrap: `SUPPORT_DASHBOARD_ADMIN_EMAILS` and `SUPPORT_DASHBOARD_ADMIN_PASSWORD_HASH` can create the first admin user.
+- Roles: `ADMIN` can manage users; `SUPPORT` can work the support queue.
+- Routes covered: dashboard pages, user management pages, and authenticated feedback APIs.
 
 ### 3.2 Source app ingest token
 
 - Where configured: `app/api/feedback/ingest/route.ts`.
 - Strategy: bearer token in `Authorization` header.
-- Validation rules: token must equal `SUPPORT_TOWER_INGEST_TOKEN`.
+- Validation rules: token must match the per-app entry in `SUPPORT_TOWER_INGEST_TOKENS_JSON`.
 - Routes covered: `POST /api/feedback/ingest`.
 
 ## 4. Database Schema
 
 ### 4.1 Enums
 
-Enums: `AppStatus`, `FeedbackKind`, `FeedbackPriority`, `FeedbackStatus`, `NotificationKind`.
+Enums: `AppStatus`, `FeedbackKind`, `FeedbackPriority`, `FeedbackStatus`, `NotificationKind`, `AuthUserRole`, `AuthUserStatus`.
 
 ### 4.2 Tables — `<domain>` domain
 
@@ -79,12 +81,14 @@ Enums: `AppStatus`, `FeedbackKind`, `FeedbackPriority`, `FeedbackStatus`, `Notif
 | `feedback_tickets` | Normalized bug/evolution tickets from source apps | FK to `source_apps.id` |
 | `feedback_replies` | Future admin replies that can sync back to source apps | FK to `feedback_tickets.id` |
 | `notifications` | Future in-app operator notifications | Optional FK to `feedback_tickets.id` |
+| `support_users` | Admin/support login accounts | None |
+| `auth_login_attempts` | Login throttling audit rows | None |
 
 Repeat per domain (auth, billing, content, etc.) — group related tables together.
 
 ### 4.3 FK conventions and totals
 
-- Total tables: 4.
+- Total tables: 6.
 - FK style: child feedback rows cascade when the source app or ticket is deleted.
 - Index naming: `<table>_<column>_idx`, with unique app/ticket identity at `feedback_tickets_source_external_idx`.
 

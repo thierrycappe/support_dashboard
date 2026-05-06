@@ -70,17 +70,19 @@ Every enforcement story has gaps. State them explicitly. ("All four layers are b
 
 ## 3. Authentication Architecture
 
-The dashboard uses Auth.js with a credentials provider for administrator access.
-There is no public registration flow. Administrators are allow-listed through
-`SUPPORT_DASHBOARD_ADMIN_EMAILS`.
+The dashboard uses Auth.js with a credentials provider backed by the
+`support_users` database table. There is no public registration flow. Admins
+create support users from `/users`.
 
 ### Admin Login
 
 - Route: `/login`
 - Provider: Auth.js credentials provider
-- Allowed users: comma-separated `SUPPORT_DASHBOARD_ADMIN_EMAILS`, with
-  `SUPPORT_DASHBOARD_ADMIN_EMAIL` retained as a legacy fallback.
-- Password storage: `SUPPORT_DASHBOARD_ADMIN_PASSWORD_HASH` only in production.
+- Allowed users: active rows in `support_users`.
+- Bootstrap admin: `SUPPORT_DASHBOARD_ADMIN_EMAILS` plus
+  `SUPPORT_DASHBOARD_ADMIN_PASSWORD_HASH` can seed or authenticate the first
+  admin account.
+- Password storage: per-user scrypt password hashes in `support_users.password_hash`.
 - Hash format: `scrypt-v1$N$r$p$salt$hash`, currently generated with `N=16384`,
   `r=8`, `p=1`, 64-byte derived keys, and random salts.
 - Plaintext fallback: `SUPPORT_DASHBOARD_ADMIN_PASSWORD` is accepted only outside
@@ -107,9 +109,14 @@ There is no public registration flow. Administrators are allow-listed through
 
 ### Authorization Model
 
-There is one dashboard role today: administrator. Page access is enforced with
-`auth()` checks in server components and route handlers. The ingest endpoint is
-excluded from page-session auth and uses its own bearer-token check.
+Dashboard roles:
+
+- `ADMIN`: full dashboard access plus support-user CRUD at `/users`.
+- `SUPPORT`: dashboard and feedback queue access, no user-management access.
+
+Page access is enforced with `auth()` checks in server components and route
+handlers. The ingest endpoint is excluded from page-session auth and uses its
+own bearer-token check.
 
 ---
 
