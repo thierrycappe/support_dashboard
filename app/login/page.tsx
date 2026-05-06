@@ -1,7 +1,5 @@
-import { auth } from '@/auth'
 import Link from 'next/link'
 import type { Route } from 'next'
-import { redirect } from 'next/navigation'
 import { loginAction } from './actions'
 
 const FORGOT_PASSWORD_ROUTE = '/forgot-password' as Route
@@ -11,8 +9,6 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ error?: string; reset?: string }>
 }) {
-  const session = await auth()
-  if (session?.user) redirect('/')
   const params = await searchParams
 
   return (
