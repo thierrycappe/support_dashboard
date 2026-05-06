@@ -124,6 +124,21 @@ For every external service the system talks to, document:
 
 (AI providers, analytics, error reporting, deployment, payment processors, email senders, etc. List every one.)
 
+### Pushover
+
+- Purpose: instant notification when a new mirrored ticket appears.
+- Data sent: ticket title, source app name, kind, priority, status, reporter
+  name/email when present, and the source/tower links.
+- Configuration: `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY`.
+
+### Resend
+
+- Purpose: daily open-ticket digest email.
+- Data sent: open ticket counts, app names, top queue titles/statuses/priorities,
+  and the Support Tower link.
+- Configuration: `RESEND_API_KEY`, `RESEND_FROM`, optional
+  `SUPPORT_TOWER_DIGEST_EMAIL_TO`.
+
 ---
 
 ## 5. Application Security

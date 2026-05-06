@@ -17,11 +17,11 @@ export async function GET(request: Request) {
   }
 
   const data = await getDashboardData()
-  const notification = await sendDailyOpenTicketReport({ data })
+  const email = await sendDailyOpenTicketReport({ data })
 
   return NextResponse.json({
     ok: true,
-    notification,
+    email,
     openTickets: data.totals.open,
     generatedAt: new Date().toISOString(),
   })
