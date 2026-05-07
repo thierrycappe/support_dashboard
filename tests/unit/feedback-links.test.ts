@@ -18,9 +18,9 @@ describe('feedback link helpers', () => {
     expect(
       normalizeSourceTicketUrl(
         'http://localhost:3000/admin/bugs/bug-1?tab=details#comments',
-        'https://pitchme.vercel.app',
+        'https://pitchme-pearl.vercel.app',
       ),
-    ).toBe('https://pitchme.vercel.app/admin/bugs/bug-1?tab=details#comments')
+    ).toBe('https://pitchme-pearl.vercel.app/admin/bugs/bug-1?tab=details#comments')
   })
 
   it('drops localhost ticket URLs when there is no public base URL', () => {
@@ -36,7 +36,7 @@ describe('feedback link helpers', () => {
         'http://localhost:3000',
         'pitchme',
       ),
-    ).toBe('https://pitchme.vercel.app/admin/feedback/bug-1')
+    ).toBe('https://pitchme-pearl.vercel.app/admin/feedback/bug-1')
   })
 
   it('uses configured source app URL overrides before stored app base URLs', () => {

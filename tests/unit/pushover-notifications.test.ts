@@ -82,7 +82,7 @@ describe('Pushover ticket notifications', () => {
           ...payload.app,
           slug: 'pitchme',
           name: 'Pitchme',
-          baseUrl: 'https://pitchme.vercel.app',
+          baseUrl: 'https://pitchme-pearl.vercel.app',
         },
         ticket: {
           ...payload.ticket,
@@ -97,7 +97,7 @@ describe('Pushover ticket notifications', () => {
 
     expect(message.message).not.toContain('localhost')
     expect(message.message).toContain(
-      'Source: https://pitchme.vercel.app/admin/bugs/ticket-123',
+      'Source: https://pitchme-pearl.vercel.app/admin/bugs/ticket-123',
     )
   })
 

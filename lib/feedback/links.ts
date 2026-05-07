@@ -1,6 +1,6 @@
 const LOCALHOST_NAMES = new Set(['localhost', '0.0.0.0', '::1'])
 const DEFAULT_SOURCE_APP_PUBLIC_URLS: Record<string, string> = {
-  pitchme: 'https://pitchme.vercel.app',
+  pitchme: 'https://pitchme-pearl.vercel.app',
 }
 
 function isLocalhostHostname(hostname: string): boolean {
