@@ -35,6 +35,24 @@ export interface DashboardData {
   }
 }
 
+export interface DashboardTotals {
+  open: number
+  bugs: number
+  evolutions: number
+  urgent: number
+}
+
+export function normalizeDashboardTotals(
+  row: Partial<Record<keyof DashboardTotals, number | string | null>> | undefined,
+): DashboardTotals {
+  return {
+    open: Number(row?.open ?? 0),
+    bugs: Number(row?.bugs ?? 0),
+    evolutions: Number(row?.evolutions ?? 0),
+    urgent: Number(row?.urgent ?? 0),
+  }
+}
+
 export async function getDashboardData(): Promise<DashboardData> {
   if (!hasDatabaseUrl()) {
     return {
@@ -47,6 +65,16 @@ export async function getDashboardData(): Promise<DashboardData> {
 
   const db = getDb()
   const openStatuses = OPEN_STATUSES as [FeedbackStatus, ...FeedbackStatus[]]
+
+  const [totalsRow] = await db
+    .select({
+      open: sql<number>`count(*)::int`,
+      bugs: sql<number>`count(*) filter (where ${feedbackTickets.kind} = 'BUG')::int`,
+      evolutions: sql<number>`count(*) filter (where ${feedbackTickets.kind} = 'EVOLUTION')::int`,
+      urgent: sql<number>`count(*) filter (where ${feedbackTickets.priority} = 'URGENT')::int`,
+    })
+    .from(feedbackTickets)
+    .where(inArray(feedbackTickets.status, openStatuses))
 
   const tickets = await db
     .select({
@@ -100,11 +128,6 @@ export async function getDashboardData(): Promise<DashboardData> {
     databaseConfigured: true,
     apps: appRows,
     tickets,
-    totals: {
-      open: tickets.length,
-      bugs: tickets.filter((ticket) => ticket.kind === 'BUG').length,
-      evolutions: tickets.filter((ticket) => ticket.kind === 'EVOLUTION').length,
-      urgent: tickets.filter((ticket) => ticket.priority === 'URGENT').length,
-    },
+    totals: normalizeDashboardTotals(totalsRow),
   }
 }
