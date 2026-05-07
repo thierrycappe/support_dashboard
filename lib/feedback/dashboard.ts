@@ -131,7 +131,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     apps: appRows,
     tickets: tickets.map(({ appBaseUrl, ...ticket }) => ({
       ...ticket,
-      url: normalizeSourceTicketUrl(ticket.url, appBaseUrl),
+      url: normalizeSourceTicketUrl(ticket.url, appBaseUrl, ticket.appSlug),
     })),
     totals: normalizeDashboardTotals(totalsRow),
   }

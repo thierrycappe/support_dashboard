@@ -198,6 +198,7 @@ export async function ingestFeedbackTicket(
   const sourceTicketUrl = normalizeSourceTicketUrl(
     ticket.url,
     payload.app.baseUrl ?? null,
+    payload.app.slug,
   )
   const values = {
     sourceAppId: appId,

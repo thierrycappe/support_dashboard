@@ -41,7 +41,11 @@ export default async function FeedbackDetailPage({
 
   const row = rows[0]
   if (!row) notFound()
-  const sourceTicketUrl = normalizeSourceTicketUrl(row.ticket.url, row.appBaseUrl)
+  const sourceTicketUrl = normalizeSourceTicketUrl(
+    row.ticket.url,
+    row.appBaseUrl,
+    row.appSlug,
+  )
 
   return (
     <AppShell>

@@ -40,7 +40,7 @@ export async function GET() {
   return NextResponse.json({
     tickets: rows.map(({ appBaseUrl, ...ticket }) => ({
       ...ticket,
-      url: normalizeSourceTicketUrl(ticket.url, appBaseUrl),
+      url: normalizeSourceTicketUrl(ticket.url, appBaseUrl, ticket.appSlug),
     })),
   })
 }

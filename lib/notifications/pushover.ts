@@ -90,6 +90,7 @@ export function buildTicketCreatedPushoverMessage(
   const normalizedSourceUrl = normalizeSourceTicketUrl(
     ticket.url,
     payload.app.baseUrl ?? null,
+    payload.app.slug,
   )
   const sourceUrl = normalizedSourceUrl ? `Source: ${normalizedSourceUrl}` : null
   const towerTicketUrl = towerUrl ? `${towerUrl}/feedback/${result.ticketId}` : null
