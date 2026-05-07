@@ -1,10 +1,11 @@
 import Link from 'next/link'
 import type { Route } from 'next'
-import { Inbox, LayoutDashboard, RadioTower, Users } from 'lucide-react'
+import { ChartNoAxesColumnIncreasing, Inbox, LayoutDashboard, RadioTower, Users } from 'lucide-react'
 import { logoutAction } from '@/app/login/actions'
 import { auth } from '@/auth'
 
 const USERS_ROUTE = '/users' as Route
+const ACTIVITY_KPIS_ROUTE = '/activity-kpis' as Route
 
 export default async function AppShell({ children }: { children: React.ReactNode }) {
   const session = await auth()
@@ -27,6 +28,10 @@ export default async function AppShell({ children }: { children: React.ReactNode
           <Link className="nav-link" href="/apps">
             <Inbox size={18} aria-hidden="true" />
             Source apps
+          </Link>
+          <Link className="nav-link" href={ACTIVITY_KPIS_ROUTE}>
+            <ChartNoAxesColumnIncreasing size={18} aria-hidden="true" />
+            Activity KPIs
           </Link>
           {isAdmin && (
             <Link className="nav-link" href={USERS_ROUTE}>
