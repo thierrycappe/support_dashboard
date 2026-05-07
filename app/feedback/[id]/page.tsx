@@ -4,6 +4,7 @@ import { auth } from '@/auth'
 import AppShell from '@/components/AppShell'
 import { getDb, hasDatabaseUrl } from '@/lib/db'
 import { feedbackTickets, sourceApps } from '@/lib/db/schema'
+import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
 import { kindLabel, visibleStatusLabel } from '@/lib/feedback/status'
 
 export const dynamic = 'force-dynamic'
@@ -31,6 +32,7 @@ export default async function FeedbackDetailPage({
       ticket: feedbackTickets,
       appName: sourceApps.name,
       appSlug: sourceApps.slug,
+      appBaseUrl: sourceApps.baseUrl,
     })
     .from(feedbackTickets)
     .innerJoin(sourceApps, eq(feedbackTickets.sourceAppId, sourceApps.id))
@@ -39,6 +41,7 @@ export default async function FeedbackDetailPage({
 
   const row = rows[0]
   if (!row) notFound()
+  const sourceTicketUrl = normalizeSourceTicketUrl(row.ticket.url, row.appBaseUrl)
 
   return (
     <AppShell>
@@ -80,9 +83,9 @@ export default async function FeedbackDetailPage({
               <strong>Reporter:</strong>{' '}
               {row.ticket.reporterEmail ?? row.ticket.reporterName ?? 'Unknown'}
             </p>
-            {row.ticket.url && (
+            {sourceTicketUrl && (
               <p>
-                <strong>URL:</strong> {row.ticket.url}
+                <strong>URL:</strong> {sourceTicketUrl}
               </p>
             )}
           </div>

@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { getDb, hasDatabaseUrl } from '@/lib/db'
 import { feedbackTickets, sourceApps } from '@/lib/db/schema'
+import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
 import { OPEN_STATUSES, type FeedbackStatus } from '@/lib/feedback/status'
 
 export async function GET() {
@@ -26,6 +27,8 @@ export async function GET() {
       status: feedbackTickets.status,
       priority: feedbackTickets.priority,
       title: feedbackTickets.title,
+      url: feedbackTickets.url,
+      appBaseUrl: sourceApps.baseUrl,
       reporterEmail: feedbackTickets.reporterEmail,
       updatedAt: feedbackTickets.updatedAt,
     })
@@ -34,5 +37,10 @@ export async function GET() {
     .where(inArray(feedbackTickets.status, OPEN_STATUSES as [FeedbackStatus, ...FeedbackStatus[]]))
     .orderBy(desc(feedbackTickets.updatedAt))
 
-  return NextResponse.json({ tickets: rows })
+  return NextResponse.json({
+    tickets: rows.map(({ appBaseUrl, ...ticket }) => ({
+      ...ticket,
+      url: normalizeSourceTicketUrl(ticket.url, appBaseUrl),
+    })),
+  })
 }

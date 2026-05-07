@@ -4,6 +4,7 @@ import { and, eq } from 'drizzle-orm'
 import { timingSafeEqual } from 'node:crypto'
 import { getDb } from '@/lib/db'
 import { feedbackTickets, sourceApps } from '@/lib/db/schema'
+import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
 import type {
   FeedbackKind,
   FeedbackPriority,
@@ -194,6 +195,10 @@ export async function ingestFeedbackTicket(
 
   const ticketId = existingRows[0]?.id ?? nanoid()
   const ticket = payload.ticket
+  const sourceTicketUrl = normalizeSourceTicketUrl(
+    ticket.url,
+    payload.app.baseUrl ?? null,
+  )
   const values = {
     sourceAppId: appId,
     externalId: ticket.externalId,
@@ -205,7 +210,7 @@ export async function ingestFeedbackTicket(
     reporterName: ticket.reporterName ?? null,
     reporterEmail: ticket.reporterEmail ?? null,
     reporterId: ticket.reporterId ?? null,
-    url: ticket.url ?? null,
+    url: sourceTicketUrl,
     browserInfo: ticket.browserInfo ?? null,
     markdownSpec: ticket.markdownSpec ?? null,
     transcript: ticket.transcript ?? null,

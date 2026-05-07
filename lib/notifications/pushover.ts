@@ -2,6 +2,7 @@ import type {
   FeedbackIngestPayload,
   IngestResult,
 } from '@/lib/feedback/ingest'
+import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
 
 const PUSHOVER_API_URL = 'https://api.pushover.net/1/messages.json'
 const MAX_TITLE_LENGTH = 250
@@ -86,7 +87,11 @@ export function buildTicketCreatedPushoverMessage(
   const ticket = payload.ticket
   const appName = payload.app.name
   const reporter = ticket.reporterEmail || ticket.reporterName || 'Unknown reporter'
-  const sourceUrl = ticket.url ? `Source: ${ticket.url}` : null
+  const normalizedSourceUrl = normalizeSourceTicketUrl(
+    ticket.url,
+    payload.app.baseUrl ?? null,
+  )
+  const sourceUrl = normalizedSourceUrl ? `Source: ${normalizedSourceUrl}` : null
   const towerTicketUrl = towerUrl ? `${towerUrl}/feedback/${result.ticketId}` : null
   const messageParts = [
     compact(`${ticket.kind} - ${ticket.priority} - ${ticket.status}`),
@@ -100,10 +105,10 @@ export function buildTicketCreatedPushoverMessage(
     title: truncate(`New support ticket: ${ticket.title}`, MAX_TITLE_LENGTH),
     message: truncate(messageParts.join('\n'), MAX_MESSAGE_LENGTH),
     priority: pushoverPriority(ticket.priority),
-    url: towerTicketUrl ?? ticket.url ?? undefined,
+    url: towerTicketUrl ?? normalizedSourceUrl ?? undefined,
     url_title: towerTicketUrl
       ? 'Open in Support Tower'
-      : ticket.url
+      : normalizedSourceUrl
         ? 'Open source ticket'
         : undefined,
   }

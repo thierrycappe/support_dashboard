@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { getDb, hasDatabaseUrl } from '@/lib/db'
 import { feedbackTickets, sourceApps } from '@/lib/db/schema'
+import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
 import { OPEN_STATUSES, type FeedbackStatus } from '@/lib/feedback/status'
 
 export interface DashboardData {
@@ -87,6 +88,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       priority: feedbackTickets.priority,
       title: feedbackTickets.title,
       url: feedbackTickets.url,
+      appBaseUrl: sourceApps.baseUrl,
       reporterEmail: feedbackTickets.reporterEmail,
       updatedAt: feedbackTickets.updatedAt,
     })
@@ -127,7 +129,10 @@ export async function getDashboardData(): Promise<DashboardData> {
   return {
     databaseConfigured: true,
     apps: appRows,
-    tickets,
+    tickets: tickets.map(({ appBaseUrl, ...ticket }) => ({
+      ...ticket,
+      url: normalizeSourceTicketUrl(ticket.url, appBaseUrl),
+    })),
     totals: normalizeDashboardTotals(totalsRow),
   }
 }

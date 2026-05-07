@@ -74,6 +74,33 @@ describe('Pushover ticket notifications', () => {
     expect(message.url_title).toBe('Open in Support Tower')
   })
 
+  it('does not leak localhost source URLs in notification text', () => {
+    const message = buildTicketCreatedPushoverMessage(
+      {
+        ...payload,
+        app: {
+          ...payload.app,
+          slug: 'pitchme',
+          name: 'Pitchme',
+          baseUrl: 'https://pitchme.vercel.app',
+        },
+        ticket: {
+          ...payload.ticket,
+          url: 'http://localhost:3000/admin/bugs/ticket-123',
+        },
+      },
+      result,
+      {
+        SUPPORT_TOWER_PUBLIC_URL: 'https://support.example.com',
+      },
+    )
+
+    expect(message.message).not.toContain('localhost')
+    expect(message.message).toContain(
+      'Source: https://pitchme.vercel.app/admin/bugs/ticket-123',
+    )
+  })
+
   it('sends a Pushover request when configured', async () => {
     let requestInit: RequestInit | undefined
     const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
