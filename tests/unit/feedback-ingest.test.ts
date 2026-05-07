@@ -4,6 +4,7 @@ import {
   feedbackIngestSchema,
   getBearerToken,
   getIngestTokenForApp,
+  normalizeFeedbackStatus,
 } from '@/lib/feedback/ingest'
 
 const validPayload = {
@@ -30,6 +31,26 @@ describe('feedback ingest contract', () => {
   it('accepts a normalized feedback payload from a source app', () => {
     const parsed = feedbackIngestSchema.safeParse(validPayload)
     expect(parsed.success).toBe(true)
+  })
+
+  it('normalizes source app status and priority labels before validation', () => {
+    const parsed = feedbackIngestSchema.parse({
+      ...validPayload,
+      ticket: {
+        ...validPayload.ticket,
+        status: 'fixed',
+        priority: 'critical',
+      },
+    })
+
+    expect(parsed.ticket.status).toBe('FIXED')
+    expect(parsed.ticket.priority).toBe('URGENT')
+  })
+
+  it('maps source app workflow aliases to dashboard statuses', () => {
+    expect(normalizeFeedbackStatus('not started')).toBe('NEW')
+    expect(normalizeFeedbackStatus('AI_BATCH_FIX')).toBe('IN_PROGRESS')
+    expect(normalizeFeedbackStatus('corrigé')).toBe('FIXED')
   })
 
   it('rejects invalid source app slugs', () => {

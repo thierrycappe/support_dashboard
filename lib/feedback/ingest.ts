@@ -10,6 +10,84 @@ import type {
   FeedbackStatus,
 } from '@/lib/feedback/status'
 
+const feedbackStatusValues = [
+  'NEW',
+  'IN_REVIEW',
+  'BACKLOG',
+  'PLANNED',
+  'IN_PROGRESS',
+  'FIXED',
+  'SHIPPED',
+  'DECLINED',
+  'CLOSED',
+] as const
+
+const feedbackPriorityValues = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const
+
+function normalizeToken(value: string): string {
+  return value
+    .trim()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/['’]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase()
+}
+
+export function normalizeFeedbackStatus(value: unknown): FeedbackStatus | undefined {
+  if (typeof value !== 'string') return undefined
+
+  const normalized = normalizeToken(value)
+  const aliases: Record<string, FeedbackStatus> = {
+    AI_BATCH_FIX: 'IN_PROGRESS',
+    A_FAIRE: 'NEW',
+    BACKLOG: 'BACKLOG',
+    CLOSED: 'CLOSED',
+    CLOTURE: 'CLOSED',
+    CORRIGE: 'FIXED',
+    DECLINED: 'DECLINED',
+    DELIVERED: 'SHIPPED',
+    DONE: 'FIXED',
+    DOING: 'IN_PROGRESS',
+    EN_COURS: 'IN_PROGRESS',
+    EN_REVUE: 'IN_REVIEW',
+    FIXED: 'FIXED',
+    IN_PROGRESS: 'IN_PROGRESS',
+    IN_REVIEW: 'IN_REVIEW',
+    NEW: 'NEW',
+    NOT_STARTED: 'NEW',
+    OPEN: 'NEW',
+    PLANNED: 'PLANNED',
+    REFUSE: 'DECLINED',
+    REJECTED: 'DECLINED',
+    RELEASED: 'SHIPPED',
+    RESOLVED: 'FIXED',
+    SHIPPED: 'SHIPPED',
+    STARTED: 'IN_PROGRESS',
+    TODO: 'NEW',
+    TO_DO: 'NEW',
+    WONT_FIX: 'DECLINED',
+  }
+
+  return aliases[normalized]
+}
+
+function normalizeFeedbackPriority(value: unknown): FeedbackPriority | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = normalizeToken(value)
+  const aliases: Record<string, FeedbackPriority> = {
+    LOW: 'LOW',
+    MEDIUM: 'MEDIUM',
+    NORMAL: 'MEDIUM',
+    HIGH: 'HIGH',
+    URGENT: 'URGENT',
+    CRITICAL: 'URGENT',
+  }
+
+  return aliases[normalized]
+}
+
 const transcriptMessageSchema = z.object({
   role: z.string().min(1),
   content: z.string().min(1),
@@ -27,19 +105,15 @@ export const feedbackIngestSchema = z.object({
     externalId: z.string().min(1).max(200),
     kind: z.enum(['BUG', 'EVOLUTION']).default('BUG'),
     status: z
-      .enum([
-        'NEW',
-        'IN_REVIEW',
-        'BACKLOG',
-        'PLANNED',
-        'IN_PROGRESS',
-        'FIXED',
-        'SHIPPED',
-        'DECLINED',
-        'CLOSED',
-      ])
-      .default('NEW'),
-    priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).default('MEDIUM'),
+      .preprocess(
+        (value) => normalizeFeedbackStatus(value) ?? value,
+        z.enum(feedbackStatusValues).default('NEW'),
+      ),
+    priority: z
+      .preprocess(
+        (value) => normalizeFeedbackPriority(value) ?? value,
+        z.enum(feedbackPriorityValues).default('MEDIUM'),
+      ),
     title: z.string().min(1).max(240),
     description: z.string().min(1),
     reporterName: z.string().max(200).optional().nullable(),
