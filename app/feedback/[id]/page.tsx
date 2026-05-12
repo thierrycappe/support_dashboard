@@ -5,7 +5,13 @@ import AppShell from '@/components/AppShell'
 import { getDb, hasDatabaseUrl } from '@/lib/db'
 import { feedbackTickets, sourceApps } from '@/lib/db/schema'
 import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
-import { kindLabel, visibleStatusLabel } from '@/lib/feedback/status'
+import { getSourceAppPullConfig } from '@/lib/feedback/source-pull'
+import {
+  isStaleTicket,
+  kindLabel,
+  visibleStatusLabel,
+} from '@/lib/feedback/status'
+import RefreshFromSourceButton from '@/components/RefreshFromSourceButton'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,6 +52,11 @@ export default async function FeedbackDetailPage({
     row.appBaseUrl,
     row.appSlug,
   )
+  const stale = isStaleTicket({
+    status: row.ticket.status,
+    lastSyncedAt: row.ticket.lastSyncedAt,
+  })
+  const pullConfigured = Boolean(getSourceAppPullConfig(row.appSlug))
 
   return (
     <AppShell>
@@ -57,6 +68,15 @@ export default async function FeedbackDetailPage({
           <h1>{row.ticket.title}</h1>
           <p className="subtle">
             {kindLabel(row.ticket.kind)} · {visibleStatusLabel(row.ticket.status)}
+            {stale && (
+              <span
+                className="badge badge-stale"
+                title={`No update from source app since ${row.ticket.lastSyncedAt?.toISOString()}`}
+                style={{ marginLeft: 8 }}
+              >
+                Stale sync
+              </span>
+            )}
           </p>
         </div>
       </div>
@@ -91,6 +111,11 @@ export default async function FeedbackDetailPage({
               <p>
                 <strong>URL:</strong> {sourceTicketUrl}
               </p>
+            )}
+            {pullConfigured && (
+              <div style={{ marginTop: 16 }}>
+                <RefreshFromSourceButton ticketId={row.ticket.id} />
+              </div>
             )}
           </div>
         </aside>

@@ -41,6 +41,7 @@ const dashboardData: DashboardData = {
       url: 'https://csm-track-zeta.vercel.app/admin/bugs/external-1',
       reporterEmail: 'thierry@example.com',
       updatedAt: new Date('2026-05-06T08:00:00.000Z'),
+      lastSyncedAt: new Date('2026-05-06T08:00:00.000Z'),
     },
     {
       id: 'ticket-2',
@@ -54,6 +55,7 @@ const dashboardData: DashboardData = {
       url: null,
       reporterEmail: null,
       updatedAt: new Date('2026-05-06T07:00:00.000Z'),
+      lastSyncedAt: new Date('2026-05-06T07:00:00.000Z'),
     },
     {
       id: 'ticket-3',
@@ -67,6 +69,7 @@ const dashboardData: DashboardData = {
       url: null,
       reporterEmail: null,
       updatedAt: new Date('2026-05-06T06:00:00.000Z'),
+      lastSyncedAt: new Date('2026-05-06T06:00:00.000Z'),
     },
   ],
   totals: {

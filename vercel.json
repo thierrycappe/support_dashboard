@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/daily-report",
       "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/sync-source-apps",
+      "schedule": "*/30 * * * *"
     }
   ]
 }
