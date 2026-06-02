@@ -73,8 +73,9 @@ export default async function AppsPage() {
           <p className="subtle">
             External apps should POST to `/api/feedback/ingest` with
             `Authorization: Bearer &lt;app-specific token&gt;`. Tokens are
-            matched to `app.slug` through `SUPPORT_TOWER_INGEST_TOKENS_JSON`, so
-            each source app can be rotated independently. The payload includes
+            matched to `app.slug` through a per-app env var
+            (`SUPPORT_TOWER_INGEST_TOKEN_&lt;SLUG&gt;`), so each source app can
+            be rotated independently. The payload includes
             `app` identity and one `ticket`. `ticket.url` should be the deep
             link to the original app feedback dashboard; this tower mirrors
             status and links out, it does not replace the source app workflow.
