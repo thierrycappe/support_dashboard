@@ -1,0 +1,7 @@
+# TODOS
+
+## Open
+
+### Replace single-JSON ingest-token blob with per-app Sensitive env vars
+
+**Priority:** P2 | **Effort:** M (human ~2-3h incl. migrating live apps; AI ~30min for code+tests) | **Why:** Ingest tokens currently live in one `SUPPORT_TOWER_INGEST_TOKENS_JSON` object marked Sensitive (write-only) in Vercel. Because it's write-only, adding or rotating one site forces rewriting the entire unreadable blob, which requires knowing every other app's token — and those are also Sensitive on the source-app side, so they can't be read back either. Adding a site today therefore requires rotating ALL apps. | **Pros:** Adding a site = add one var, existing apps untouched; rotating one app touches only that app; no unreadable-blob reconstruction; clearer per-app auditing. | **Cons:** One-time code change to `getIngestTokenForApp()` (`lib/feedback/ingest.ts:245`) + a migration pass that re-sets a Sensitive var on the dashboard and each source app (same disruption as a full rotation); env-var naming convention to agree on (e.g. `SUPPORT_TOWER_INGEST_TOKEN__<SLUG-UPPER>`). | **Context:** 2026-06-02 — surfaced while trying to add a new source site; discovered the JSON blob and all source-app `SUPPORT_TOWER_*` vars are Sensitive/unreadable, forcing a full rotation just to add one entry. | **Depends on:** today's rotation (do the migration AS the rotation to avoid disrupting every app twice). | **Added:** 2026-06-02 via chat (ingest-token reconstruction session)
