@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.1] - 2026-06-02
+
+### Corrections de bugs
+
+- Le cron `sync-source-apps` effectue désormais une synchronisation **complète** (et non plus incrémentale) : tous les tickets ouverts sont réingérés à chaque exécution, ce qui rafraîchit `lastSyncedAt` et fait disparaître l'indicateur « Stale sync » même pour les tickets inchangés depuis plus de 48 h. Auparavant le pull n'allait chercher que les tickets modifiés depuis la dernière synchronisation, si bien qu'un ticket déjà périmé ne se rafraîchissait jamais.
+
 ## [0.3.0] - 2026-06-02
 
 ### Modifications

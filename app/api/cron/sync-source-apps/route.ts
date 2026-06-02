@@ -29,7 +29,10 @@ export async function GET(request: Request) {
   const slugs = listConfiguredPullSlugs()
   const results: PullSourceAppResult[] = []
   for (const slug of slugs) {
-    results.push(await pullSourceApp({ appSlug: slug }))
+    // Full sync (no incremental `since`): re-ingest every open ticket so
+    // `lastSyncedAt` is refreshed even for tickets that have not changed —
+    // otherwise an incremental pull never clears the "Stale sync" indicator.
+    results.push(await pullSourceApp({ appSlug: slug, resolveSince: async () => null }))
   }
 
   return NextResponse.json({
