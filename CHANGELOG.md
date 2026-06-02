@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.2] - 2026-06-02
+
+### Améliorations
+
+- Documentation du contrat de connecteur : la page « Apps » et `SECURITY.md` décrivent désormais l'endpoint d'export (`GET /api/support-tower/export`, `Authorization: Bearer <SUPPORT_TOWER_EXPORT_TOKEN>`) que les applications sources doivent exposer pour que le tower puisse tirer l'état des tickets et lever l'indicateur « Stale sync ».
+
 ## [0.3.1] - 2026-06-02
 
 ### Corrections de bugs

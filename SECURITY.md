@@ -114,6 +114,15 @@ create support users from `/users`.
 - Token comparison: constant-time comparison after resolving the expected token
   for the submitted app slug.
 
+### Service-to-Service Export/Pull Auth
+
+- Direction: the tower **pulls** from each source app's `GET /api/support-tower/export`
+  every 30 minutes (full sync) to refresh ticket state and clear "Stale sync".
+- Dashboard config: `SUPPORT_TOWER_SOURCE_APP_PULL_JSON`, a per-slug map of
+  `{ url, token }`. The source app authenticates the request against its own
+  `SUPPORT_TOWER_EXPORT_TOKEN` (falling back to its ingest token).
+- The pull is full (no incremental `since`) so unchanged tickets still refresh.
+
 ### Authorization Model
 
 Dashboard roles:
