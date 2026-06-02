@@ -15,76 +15,95 @@ adding one new site (`pichon-bi-feedback`) would require rotating all existing a
 
 ## Decision
 
-Add a **per-app env var** lookup, keeping the legacy blob as a fallback. Chosen over a
-DB-backed token management system because onboarding is rare and always performed by a
-developer with Vercel access (YAGNI on UI / hashing / schema). The DB-management option
-remains the documented future trigger if onboarding becomes frequent or delegated.
+Replace the blob with **one Encrypted env var per app**, as the single mechanism. All
+four sites (`casal-track`, `csm-track`, `pitchme`, `pichon-bi-feedback`) move to per-app
+vars and the legacy `SUPPORT_TOWER_INGEST_TOKENS_JSON` blob and the singular
+`SUPPORT_TOWER_INGEST_TOKEN` dashboard fallback are removed.
+
+Chosen over a DB-backed token management system because onboarding is rare and always
+performed by a developer with Vercel access (YAGNI on UI / hashing / schema). The
+DB-management option remains the documented future trigger if onboarding becomes
+frequent or delegated.
+
+**Why migrate all four now (not just the new site):** leaving the 3 existing apps on the
+blob would keep two token mechanisms alive indefinitely — a maintenance trap nobody
+remembers in three months. Since the existing tokens are unreadable, migrating them means
+rotating them; the blob would then be dead code, so it is deleted outright.
 
 ## Design
 
-### Lookup precedence
+### Lookup — single mechanism
 
-`getIngestTokenForApp(appSlug)` in `lib/feedback/ingest.ts` resolves in this order:
-
-1. **Per-app env var** (new, preferred)
-2. **`SUPPORT_TOWER_INGEST_TOKENS_JSON`** blob (legacy, backward-compat)
-3. **`SUPPORT_TOWER_INGEST_TOKEN`** singular (legacy)
-
-The per-app var is checked and returned **before** the JSON is parsed, so a site
-configured via per-app var is immune to a malformed legacy blob (no spurious 503).
-
-### Slug → env key mapping
-
-New exported pure helper:
+`getIngestTokenForApp(appSlug)` in `lib/feedback/ingest.ts` resolves **only** the per-app
+env var:
 
 ```
 ingestTokenEnvKey(slug) = "SUPPORT_TOWER_INGEST_TOKEN__" + slug.toUpperCase().replace(/-/g, "_")
+return env[ingestTokenEnvKey(appSlug)]?.trim() || null
 ```
 
 Example: `pichon-bi-feedback` → `SUPPORT_TOWER_INGEST_TOKEN__PICHON_BI_FEEDBACK`.
 
 Slugs match `^[a-z0-9][a-z0-9-]*$` (ingest schema, `lib/feedback/ingest.ts:99`), so they
-never contain `_`; the `__` separator + transform is unambiguous and reversible.
+never contain `_`; the `__` separator + transform is unambiguous.
 
-### Migration behavior
+The function no longer parses JSON and no longer throws, so the route's
+`try/catch` that returned a 503 `"SUPPORT_TOWER_INGEST_TOKENS_JSON is invalid"`
+(`app/api/feedback/ingest/route.ts:27-35`) becomes dead and is removed. A missing/unknown
+token resolves to `null` → existing 401 path (`route.ts:37`).
 
-Because per-app wins but the blob is still honored, the three existing apps
-(`casal-track`, `csm-track`, `pitchme`) keep working unchanged on the legacy blob. No
-forced rotation. They can be migrated to per-app vars individually later (tracked in
-TODOS.md); once all are migrated the blob may be removed.
+### Removed
+
+- `SUPPORT_TOWER_INGEST_TOKENS_JSON` parsing in `getIngestTokenForApp`.
+- `SUPPORT_TOWER_INGEST_TOKEN` singular fallback (dashboard receiver side).
+- The 503 invalid-JSON branch in the ingest route.
+- The dashboard env vars `SUPPORT_TOWER_INGEST_TOKENS_JSON` (and singular if present),
+  deleted after cutover.
+
+Note: each **source app** keeps its own outgoing `SUPPORT_TOWER_INGEST_TOKEN` (same name,
+different project, different meaning — the token it sends). Unaffected by the above.
+
+## Migration / rotation (all four apps)
+
+This is a coordinated rotation. Per-app token mismatch causes a brief 401 window for an
+app between dashboard cutover and that app's redeploy — acceptable for async, low-traffic
+feedback ingest.
+
+1. Generate four fresh tokens (`openssl rand -hex 32`).
+2. Dashboard: add the four `SUPPORT_TOWER_INGEST_TOKEN__<SLUG>` vars as **Encrypted**.
+3. Deploy the dashboard with the per-app-only code.
+4. For each source app (`casal-track`, `csm-track`, `pitchme`): overwrite its
+   `SUPPORT_TOWER_INGEST_TOKEN` with the matching new token; redeploy. Do these promptly
+   after step 3 to minimise the 401 window.
+5. New app `pichon-bi-feedback`: set `SUPPORT_TOWER_URL`,
+   `SUPPORT_TOWER_APP_SLUG=pichon-bi-feedback`, `SUPPORT_TOWER_APP_NAME`,
+   `SUPPORT_TOWER_INGEST_TOKEN=<token4>`; deploy. First ingest auto-registers its
+   `source_apps` row (`lib/feedback/ingest.ts:151-161`).
+6. Verify all four ingest successfully, then delete the legacy
+   `SUPPORT_TOWER_INGEST_TOKENS_JSON` (and singular) from the dashboard.
 
 ## Testing
 
-Unit only (pure function, env injected) — `tests/unit/feedback-ingest.test.ts`. This is
-not journey-shaped, so no E2E/Playwright scenario is added (per Testing Pyramid Policy).
+Unit only (pure function, env injected) — `tests/unit/feedback-ingest.test.ts`. Not
+journey-shaped, so no E2E/Playwright scenario (per Testing Pyramid Policy). Update the
+existing blob-based tests to the per-app mechanism:
 
-- per-app var resolves
-- per-app var takes precedence over the JSON blob
-- per-app var resolves even when the JSON blob is malformed (no throw)
-- falls back to the JSON blob when the per-app var is absent
-- falls back to the singular var when neither is set
+- per-app var resolves the token
+- absent var → `null`
 - `ingestTokenEnvKey` transforms hyphens and case correctly
-
-## Immediate task — onboard `pichon-bi-feedback`
-
-1. Generate token: `openssl rand -hex 32`.
-2. Dashboard project: add `SUPPORT_TOWER_INGEST_TOKEN__PICHON_BI_FEEDBACK` as
-   **Encrypted** (not Sensitive — editability requirement).
-3. `pichon-bi-feedback` app: set `SUPPORT_TOWER_URL`, `SUPPORT_TOWER_APP_SLUG=pichon-bi-feedback`,
-   `SUPPORT_TOWER_APP_NAME`, `SUPPORT_TOWER_INGEST_TOKEN=<token>`.
-4. Deploy the dashboard (with the code change) and the source app.
-5. First ingest auto-registers the `source_apps` row (`lib/feedback/ingest.ts:151-161`).
+- (remove the obsolete JSON-blob and singular-fallback tests)
 
 ## Docs & release
 
-- **SECURITY.md** — "Service-to-Service Ingest Auth": document the per-app var mechanism,
-  precedence, and the Encrypted-vs-Sensitive trade-off (readable tokens are a slightly
-  weaker posture, accepted for low-frequency solo onboarding).
+- **SECURITY.md** — "Service-to-Service Ingest Auth": replace the JSON-map description
+  with per-app Encrypted vars; add the Encrypted-vs-Sensitive trade-off note.
 - **ARCHITECTURE.md:67** — update the validation-rule description.
 - **app/apps/page.tsx:76** — update the help text that references the JSON map.
+- **.env.example** — replace the blob var with the per-app pattern.
 - Help files updated per "always update help files after app-behavior changes".
-- **CHANGELOG.md** (French) + **package.json** minor bump (backward-compatible feature).
-- **TODOS.md** — narrow the existing entry to the future DB-management trigger.
+- **CHANGELOG.md** (French) + **package.json** minor bump (no external API change).
+- **TODOS.md** — the per-app-var migration is now done; keep only the future
+  DB-management trigger as an open item.
 
 ## Security note (on the record)
 
