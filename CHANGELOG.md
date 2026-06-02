@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0] - 2026-06-02
+
+### Modifications
+
+- Résolution des jetons d'ingestion par variable d'environnement dédiée à chaque application source (`SUPPORT_TOWER_INGEST_TOKEN_<SLUG>`, p. ex. `SUPPORT_TOWER_INGEST_TOKEN_PICHON_BI_FEEDBACK`). Chaque jeton est désormais indépendamment rotatif et modifiable.
+- Suppression de l'ancienne carte JSON unique `SUPPORT_TOWER_INGEST_TOKENS_JSON` et du jeton partagé `SUPPORT_TOWER_INGEST_TOKEN` : la variable par application est désormais le seul mécanisme.
+
 ## [0.2.0] - 2026-05-12
 
 ### Nouvelles fonctionnalités

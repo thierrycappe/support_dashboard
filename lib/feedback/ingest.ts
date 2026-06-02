@@ -242,23 +242,18 @@ export function getBearerToken(headers: Headers): string | null {
   return value.slice('Bearer '.length).trim()
 }
 
+// Per-app token env var name for a slug, e.g. "pichon-bi-feedback" ->
+// "SUPPORT_TOWER_INGEST_TOKEN_PICHON_BI_FEEDBACK".
+export function ingestTokenEnvVarForSlug(appSlug: string): string {
+  return `SUPPORT_TOWER_INGEST_TOKEN_${normalizeToken(appSlug)}`
+}
+
 export function getIngestTokenForApp(
   appSlug: string,
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  const tokenMapJson = env.SUPPORT_TOWER_INGEST_TOKENS_JSON?.trim()
-
-  if (tokenMapJson) {
-    const parsed = JSON.parse(tokenMapJson) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('SUPPORT_TOWER_INGEST_TOKENS_JSON must be a JSON object')
-    }
-
-    const value = (parsed as Record<string, unknown>)[appSlug]
-    return typeof value === 'string' && value.trim() ? value : null
-  }
-
-  return env.SUPPORT_TOWER_INGEST_TOKEN?.trim() || null
+  // One independently rotatable Encrypted env var per app slug.
+  return env[ingestTokenEnvVarForSlug(appSlug)]?.trim() || null
 }
 
 export function constantTimeTokenEquals(actual: string, expected: string): boolean {
