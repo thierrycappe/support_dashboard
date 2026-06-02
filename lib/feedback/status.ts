@@ -23,6 +23,24 @@ export function isOpenStatus(status: FeedbackStatus): boolean {
   return OPEN_STATUSES.includes(status)
 }
 
+export const STALE_AFTER_HOURS = 48
+
+export interface StaleCandidate {
+  status: FeedbackStatus
+  lastSyncedAt: Date | null
+}
+
+export function isStaleTicket(
+  ticket: StaleCandidate,
+  now: Date = new Date(),
+  thresholdHours: number = STALE_AFTER_HOURS,
+): boolean {
+  if (!isOpenStatus(ticket.status)) return false
+  if (!ticket.lastSyncedAt) return false
+  const ageMs = now.getTime() - ticket.lastSyncedAt.getTime()
+  return ageMs >= thresholdHours * 60 * 60 * 1000
+}
+
 export function visibleStatusLabel(status: FeedbackStatus): string {
   const labels: Record<FeedbackStatus, string> = {
     NEW: 'New',

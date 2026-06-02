@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import AppShell from '@/components/AppShell'
 import { getDashboardData } from '@/lib/feedback/dashboard'
 import {
+  isStaleTicket,
   kindLabel,
   visibleStatusLabel,
   type FeedbackKind,
@@ -102,7 +103,21 @@ export default async function DashboardPage() {
                         {kindLabel(ticket.kind as FeedbackKind)}
                       </span>
                     </td>
-                    <td>{visibleStatusLabel(ticket.status as FeedbackStatus)}</td>
+                    <td>
+                      {visibleStatusLabel(ticket.status as FeedbackStatus)}
+                      {isStaleTicket({
+                        status: ticket.status as FeedbackStatus,
+                        lastSyncedAt: ticket.lastSyncedAt,
+                      }) && (
+                        <span
+                          className="badge badge-stale"
+                          title={`No update from source app since ${ticket.lastSyncedAt?.toISOString()}`}
+                          style={{ marginLeft: 6 }}
+                        >
+                          Stale sync
+                        </span>
+                      )}
+                    </td>
                     <td>
                       <span
                         className={`badge ${

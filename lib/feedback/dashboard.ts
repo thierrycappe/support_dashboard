@@ -27,6 +27,7 @@ export interface DashboardData {
     url: string | null
     reporterEmail: string | null
     updatedAt: Date
+    lastSyncedAt: Date | null
   }>
   totals: {
     open: number
@@ -91,6 +92,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       appBaseUrl: sourceApps.baseUrl,
       reporterEmail: feedbackTickets.reporterEmail,
       updatedAt: feedbackTickets.updatedAt,
+      lastSyncedAt: feedbackTickets.lastSyncedAt,
     })
     .from(feedbackTickets)
     .innerJoin(sourceApps, eq(feedbackTickets.sourceAppId, sourceApps.id))

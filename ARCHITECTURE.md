@@ -101,6 +101,8 @@ Repeat per domain (auth, billing, content, etc.) — group related tables togeth
 | `POST` | `/api/feedback/ingest` | Source apps upsert one feedback ticket | Bearer ingest token |
 | `GET` | `/api/feedback` | Return open tickets for authenticated clients | Auth.js session |
 | `PATCH` | `/api/feedback/[id]` | Reserved for future local annotations; source apps currently own status updates through ingest | Auth.js session |
+| `POST` | `/api/feedback/[id]/refresh` | Pull one ticket from its source app and upsert via `ingestFeedbackTicket` | Auth.js session |
+| `GET` | `/api/cron/sync-source-apps` | Iterate `SUPPORT_TOWER_SOURCE_APP_PULL_JSON` and pull deltas since `MAX(last_synced_at)` per app | Bearer `CRON_SECRET` |
 
 ### 5.2 Runtime configuration
 
@@ -161,3 +163,9 @@ Append-only log of architectural decisions. Each entry: date, decision, rational
 - **Rationale:** ...
 - **Alternatives considered:** ...
 - **Status:** active | superseded by `<later entry>` | deprecated
+
+### 2026-05-12 — Outbound pull from source apps (Casal-track)
+- **Decision:** Add an outbound pull path in addition to the inbound `/api/feedback/ingest` push. Source apps configured in `SUPPORT_TOWER_SOURCE_APP_PULL_JSON` expose `GET <url>?since=…|externalId=…` returning the same `feedbackIngestSchema` shape. A Vercel Cron drives bulk reconciliation every 30 minutes; a per-ticket `Refresh from source` button gives admins on-demand reconciliation.
+- **Rationale:** Casal-track was emitting `IN_PROGRESS` transitions but not the subsequent close transition, leaving tickets stuck open in the tower. The control tower cannot fix Casal-track's emitter, but pull-with-cursor closes the gap defensively and works for any future source app with the same emit gap.
+- **Alternatives considered:** (a) DB column for a per-app cursor — rejected, `MAX(last_synced_at)` is good enough and avoids a migration. (b) Auto-close tickets that go stale — rejected, data loss risk if the source app simply went quiet. (c) Fix only at the Casal-track emitter — still required, but defence-in-depth here is cheap.
+- **Status:** active
