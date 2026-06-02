@@ -242,12 +242,23 @@ export function getBearerToken(headers: Headers): string | null {
   return value.slice('Bearer '.length).trim()
 }
 
+// Per-app token env var name for a slug, e.g. "pichon-bi-feedback" ->
+// "SUPPORT_TOWER_INGEST_TOKEN_PICHON_BI_FEEDBACK".
+export function ingestTokenEnvVarForSlug(appSlug: string): string {
+  return `SUPPORT_TOWER_INGEST_TOKEN_${normalizeToken(appSlug)}`
+}
+
 export function getIngestTokenForApp(
   appSlug: string,
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  const tokenMapJson = env.SUPPORT_TOWER_INGEST_TOKENS_JSON?.trim()
+  // Preferred: one independently rotatable env var per app slug.
+  const perApp = env[ingestTokenEnvVarForSlug(appSlug)]?.trim()
+  if (perApp) return perApp
 
+  // Migration fallback: legacy JSON map keyed by slug. Remove once every source
+  // app has a SUPPORT_TOWER_INGEST_TOKEN_<SLUG> var set.
+  const tokenMapJson = env.SUPPORT_TOWER_INGEST_TOKENS_JSON?.trim()
   if (tokenMapJson) {
     const parsed = JSON.parse(tokenMapJson) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -258,6 +269,7 @@ export function getIngestTokenForApp(
     return typeof value === 'string' && value.trim() ? value : null
   }
 
+  // Legacy single shared token.
   return env.SUPPORT_TOWER_INGEST_TOKEN?.trim() || null
 }
 

@@ -78,6 +78,25 @@ describe('feedback ingest contract', () => {
     expect(token).toBe('sales-token')
   })
 
+  it('prefers the per-app token env var over the legacy JSON map', () => {
+    const token = getIngestTokenForApp('pichon-bi-feedback', {
+      SUPPORT_TOWER_INGEST_TOKEN_PICHON_BI_FEEDBACK: 'per-app-token',
+      SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({
+        'pichon-bi-feedback': 'json-map-token',
+      }),
+    })
+
+    expect(token).toBe('per-app-token')
+  })
+
+  it('resolves a per-app token env var by normalized slug', () => {
+    expect(
+      getIngestTokenForApp('casal-track', {
+        SUPPORT_TOWER_INGEST_TOKEN_CASAL_TRACK: 'casal-token',
+      }),
+    ).toBe('casal-token')
+  })
+
   it('does not fall back to the legacy shared token when a JSON token map is configured', () => {
     const token = getIngestTokenForApp('unknown-app', {
       SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({
