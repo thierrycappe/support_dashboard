@@ -252,25 +252,8 @@ export function getIngestTokenForApp(
   appSlug: string,
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  // Preferred: one independently rotatable env var per app slug.
-  const perApp = env[ingestTokenEnvVarForSlug(appSlug)]?.trim()
-  if (perApp) return perApp
-
-  // Migration fallback: legacy JSON map keyed by slug. Remove once every source
-  // app has a SUPPORT_TOWER_INGEST_TOKEN_<SLUG> var set.
-  const tokenMapJson = env.SUPPORT_TOWER_INGEST_TOKENS_JSON?.trim()
-  if (tokenMapJson) {
-    const parsed = JSON.parse(tokenMapJson) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('SUPPORT_TOWER_INGEST_TOKENS_JSON must be a JSON object')
-    }
-
-    const value = (parsed as Record<string, unknown>)[appSlug]
-    return typeof value === 'string' && value.trim() ? value : null
-  }
-
-  // Legacy single shared token.
-  return env.SUPPORT_TOWER_INGEST_TOKEN?.trim() || null
+  // One independently rotatable Encrypted env var per app slug.
+  return env[ingestTokenEnvVarForSlug(appSlug)]?.trim() || null
 }
 
 export function constantTimeTokenEquals(actual: string, expected: string): boolean {

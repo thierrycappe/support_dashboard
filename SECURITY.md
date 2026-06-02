@@ -102,8 +102,15 @@ create support users from `/users`.
 
 - Route: `/api/feedback/ingest`
 - Authentication: `Authorization: Bearer <token>`
-- Preferred configuration: `SUPPORT_TOWER_INGEST_TOKENS_JSON`, a per-source-app
-  token map keyed by app slug.
+- Configuration: one **Encrypted** env var per source app,
+  `SUPPORT_TOWER_INGEST_TOKEN_<SLUG>` (slug normalized: upper-cased,
+  non-alphanumeric → `_`). This is the only mechanism — the former
+  `SUPPORT_TOWER_INGEST_TOKENS_JSON` map and singular `SUPPORT_TOWER_INGEST_TOKEN`
+  were removed.
+- Encrypted (not Sensitive) is a deliberate trade-off: any Vercel project member
+  can read a token, but tokens can be edited/rotated individually without
+  reconstructing an unreadable set. Accepted because onboarding is rare and
+  developer-only; revisit if onboarding becomes frequent or delegated.
 - Token comparison: constant-time comparison after resolving the expected token
   for the submitted app slug.
 

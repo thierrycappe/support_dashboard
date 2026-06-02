@@ -4,6 +4,14 @@
 **Status:** Approved (design)
 **Area:** Service-to-service ingest auth
 
+> **Implementation note (reconciliation):** a parallel session pre-created the four
+> per-app vars in live Vercel using a **single-underscore** convention via the existing
+> `normalizeToken` helper — env key `SUPPORT_TOWER_INGEST_TOKEN_<SLUG>` (function
+> `ingestTokenEnvVarForSlug`), not the double-underscore `ingestTokenEnvKey` drafted
+> below. The single-underscore form is unambiguous (slugs cannot contain `_`) and is the
+> shipped convention; read the `__`/`ingestTokenEnvKey` references below as that. The
+> single-mechanism decision (blob + singular removed) stands.
+
 ## Problem
 
 Source-app ingest tokens are stored in a single `SUPPORT_TOWER_INGEST_TOKENS_JSON`

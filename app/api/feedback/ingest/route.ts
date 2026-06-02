@@ -24,15 +24,7 @@ export async function POST(request: Request) {
     )
   }
 
-  let expectedToken: string | null
-  try {
-    expectedToken = getIngestTokenForApp(parsed.data.app.slug)
-  } catch {
-    return NextResponse.json(
-      { error: 'SUPPORT_TOWER_INGEST_TOKENS_JSON is invalid' },
-      { status: 503 },
-    )
-  }
+  const expectedToken = getIngestTokenForApp(parsed.data.app.slug)
 
   if (!expectedToken || !constantTimeTokenEquals(token, expectedToken)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

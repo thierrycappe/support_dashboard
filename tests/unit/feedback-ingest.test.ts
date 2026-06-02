@@ -4,6 +4,7 @@ import {
   feedbackIngestSchema,
   getBearerToken,
   getIngestTokenForApp,
+  ingestTokenEnvVarForSlug,
   normalizeFeedbackStatus,
 } from '@/lib/feedback/ingest'
 
@@ -66,29 +67,6 @@ describe('feedback ingest contract', () => {
     expect(getBearerToken(headers)).toBe('test-token')
   })
 
-  it('resolves per-app ingest tokens from the JSON token map', () => {
-    const token = getIngestTokenForApp('sales-portal', {
-      SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({
-        'sales-portal': 'sales-token',
-        csm: 'csm-token',
-      }),
-      SUPPORT_TOWER_INGEST_TOKEN: 'legacy-token',
-    })
-
-    expect(token).toBe('sales-token')
-  })
-
-  it('prefers the per-app token env var over the legacy JSON map', () => {
-    const token = getIngestTokenForApp('pichon-bi-feedback', {
-      SUPPORT_TOWER_INGEST_TOKEN_PICHON_BI_FEEDBACK: 'per-app-token',
-      SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({
-        'pichon-bi-feedback': 'json-map-token',
-      }),
-    })
-
-    expect(token).toBe('per-app-token')
-  })
-
   it('resolves a per-app token env var by normalized slug', () => {
     expect(
       getIngestTokenForApp('casal-track', {
@@ -97,23 +75,28 @@ describe('feedback ingest contract', () => {
     ).toBe('casal-token')
   })
 
-  it('does not fall back to the legacy shared token when a JSON token map is configured', () => {
-    const token = getIngestTokenForApp('unknown-app', {
-      SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({
-        csm: 'csm-token',
+  it('returns null when no per-app token env var is set for the slug', () => {
+    expect(
+      getIngestTokenForApp('unknown-app', {
+        SUPPORT_TOWER_INGEST_TOKEN_CASAL_TRACK: 'casal-token',
       }),
-      SUPPORT_TOWER_INGEST_TOKEN: 'legacy-token',
-    })
-
-    expect(token).toBeNull()
+    ).toBeNull()
   })
 
-  it('falls back to the legacy shared token when no JSON token map is configured', () => {
-    const token = getIngestTokenForApp('sales-portal', {
-      SUPPORT_TOWER_INGEST_TOKEN: 'legacy-token',
-    })
+  it('ignores the removed legacy JSON map and shared token', () => {
+    expect(
+      getIngestTokenForApp('sales-portal', {
+        SUPPORT_TOWER_INGEST_TOKENS_JSON: JSON.stringify({ 'sales-portal': 'json-token' }),
+        SUPPORT_TOWER_INGEST_TOKEN: 'legacy-token',
+      }),
+    ).toBeNull()
+  })
 
-    expect(token).toBe('legacy-token')
+  it('maps slugs to env keys by upper-casing and replacing hyphens', () => {
+    expect(ingestTokenEnvVarForSlug('pichon-bi-feedback')).toBe(
+      'SUPPORT_TOWER_INGEST_TOKEN_PICHON_BI_FEEDBACK',
+    )
+    expect(ingestTokenEnvVarForSlug('csm')).toBe('SUPPORT_TOWER_INGEST_TOKEN_CSM')
   })
 
   it('compares bearer tokens without accepting prefixes', () => {

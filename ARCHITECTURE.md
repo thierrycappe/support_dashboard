@@ -64,7 +64,7 @@ The system has two authentication mechanisms.
 
 - Where configured: `app/api/feedback/ingest/route.ts`.
 - Strategy: bearer token in `Authorization` header.
-- Validation rules: token must match the per-app entry in `SUPPORT_TOWER_INGEST_TOKENS_JSON`.
+- Validation rules: token must match the per-app env var `SUPPORT_TOWER_INGEST_TOKEN_<SLUG>` for the submitted `app.slug` (slug upper-cased, non-alphanumeric → `_`).
 - Routes covered: `POST /api/feedback/ingest`.
 
 ## 4. Database Schema
