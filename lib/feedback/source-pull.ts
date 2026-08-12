@@ -4,10 +4,10 @@ import { getDb } from '@/lib/db'
 import { feedbackTickets, sourceApps } from '@/lib/db/schema'
 import {
   feedbackIngestSchema,
-  ingestFeedbackTicket,
   type FeedbackIngestPayload,
   type IngestResult,
 } from '@/lib/feedback/ingest'
+import { acceptLegacyPayload, legacyResult } from '@/lib/escalations/legacy'
 
 const pullConfigEntrySchema = z.object({
   url: z.string().url(),
@@ -105,7 +105,7 @@ export interface PullSourceAppOptions {
   appSlug: string
   env?: Env
   fetchImpl?: typeof fetch
-  ingest?: (payload: FeedbackIngestPayload) => Promise<IngestResult>
+  accept?: (payload: FeedbackIngestPayload, authoritativeAppSlug: string) => Promise<IngestResult>
   resolveSince?: (appSlug: string) => Promise<Date | null>
   logger?: Pick<Console, 'warn'>
 }
@@ -114,7 +114,7 @@ export async function pullSourceApp({
   appSlug,
   env = process.env,
   fetchImpl = fetch,
-  ingest = ingestFeedbackTicket,
+  accept,
   resolveSince = getLastSyncedAtForApp,
   logger = console,
 }: PullSourceAppOptions): Promise<PullSourceAppResult> {
@@ -145,7 +145,15 @@ export async function pullSourceApp({
 
   for (const payload of tickets) {
     try {
-      const ingestResult = await ingest(payload)
+      if (payload.app.slug !== appSlug) throw new Error('source app identity mismatch')
+      if (!accept) {
+        const accepted = await acceptLegacyPayload({ payload, authoritativeAppSlug: appSlug })
+        result.pulled += 1
+        if (legacyResult(accepted).created) result.created += 1
+        else result.updated += 1
+        continue
+      }
+      const ingestResult = await accept(payload, appSlug)
       result.pulled += 1
       if (ingestResult.created) result.created += 1
       else result.updated += 1

@@ -7,7 +7,7 @@ import {
   fetchTicketsFromSource,
   getSourceAppPullConfig,
 } from '@/lib/feedback/source-pull'
-import { ingestFeedbackTicket } from '@/lib/feedback/ingest'
+import { acceptLegacyPayload, legacyResult } from '@/lib/escalations/legacy'
 
 export const dynamic = 'force-dynamic'
 
@@ -74,7 +74,13 @@ export async function POST(
     )
   }
 
-  const result = await ingestFeedbackTicket(payload)
+  if (payload.app.slug !== row.appSlug) {
+    return NextResponse.json({ error: 'Source app identity mismatch' }, { status: 409 })
+  }
+  const result = legacyResult(await acceptLegacyPayload({
+    payload,
+    authoritativeAppSlug: row.appSlug,
+  }))
   return NextResponse.json({
     ok: true,
     refreshed: true,

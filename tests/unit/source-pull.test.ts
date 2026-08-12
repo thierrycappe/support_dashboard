@@ -116,7 +116,7 @@ describe('fetchTicketsFromSource', () => {
 
 describe('pullSourceApp', () => {
   it('ingests each ticket and counts created vs updated', async () => {
-    const ingest = vi
+    const accept = vi
       .fn()
       .mockResolvedValueOnce({ appId: 'a', ticketId: 't1', created: true })
       .mockResolvedValueOnce({ appId: 'a', ticketId: 't2', created: false })
@@ -137,7 +137,7 @@ describe('pullSourceApp', () => {
       appSlug: 'casal-track',
       env: envWithCasal,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      ingest,
+      accept,
       resolveSince: async () => null,
     })
 
@@ -145,7 +145,8 @@ describe('pullSourceApp', () => {
     expect(result.created).toBe(1)
     expect(result.updated).toBe(1)
     expect(result.errors).toEqual([])
-    expect(ingest).toHaveBeenCalledTimes(2)
+    expect(accept).toHaveBeenCalledTimes(2)
+    expect(accept).toHaveBeenLastCalledWith(expect.any(Object), 'casal-track')
   })
 
   it('reports an error when no pull config exists for the slug', async () => {
@@ -153,7 +154,7 @@ describe('pullSourceApp', () => {
       appSlug: 'pitchme',
       env: envWithCasal,
       fetchImpl: vi.fn() as unknown as typeof fetch,
-      ingest: vi.fn(),
+      accept: vi.fn(),
       resolveSince: async () => null,
     })
 
@@ -170,7 +171,7 @@ describe('pullSourceApp', () => {
       appSlug: 'casal-track',
       env: envWithCasal,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      ingest: vi.fn(),
+      accept: vi.fn(),
       resolveSince: async () => null,
       logger: { warn: vi.fn() },
     })
@@ -180,7 +181,7 @@ describe('pullSourceApp', () => {
   })
 
   it('captures per-ticket ingest failures and keeps processing siblings', async () => {
-    const ingest = vi
+    const accept = vi
       .fn()
       .mockRejectedValueOnce(new Error('db down'))
       .mockResolvedValueOnce({ appId: 'a', ticketId: 't2', created: true })
@@ -201,7 +202,7 @@ describe('pullSourceApp', () => {
       appSlug: 'casal-track',
       env: envWithCasal,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      ingest,
+      accept,
       resolveSince: async () => null,
       logger: { warn: vi.fn() },
     })
@@ -209,5 +210,32 @@ describe('pullSourceApp', () => {
     expect(result.pulled).toBe(1)
     expect(result.created).toBe(1)
     expect(result.errors).toEqual(['ct_42: db down'])
+  })
+
+  it('rejects a payload whose app slug differs from the configured app', async () => {
+    const accept = vi.fn()
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          tickets: [{
+            ...sampleTicket,
+            app: { ...sampleTicket.app, slug: 'other-app' },
+          }],
+        }),
+        { status: 200 },
+      ),
+    )
+
+    const result = await pullSourceApp({
+      appSlug: 'casal-track',
+      env: envWithCasal,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      accept,
+      resolveSince: async () => null,
+      logger: { warn: vi.fn() },
+    })
+
+    expect(result.errors).toEqual(['ct_42: source app identity mismatch'])
+    expect(accept).not.toHaveBeenCalled()
   })
 })

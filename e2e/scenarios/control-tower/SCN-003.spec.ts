@@ -1,4 +1,4 @@
-// scaffold:scenario:SCN-003:139fc186
+// scaffold:scenario:SCN-003:c62ec0bc
 import { test, expect } from '@playwright/test'
 
 test.describe.skip('SCN-003 — periodic pull from configured source apps', () => {
