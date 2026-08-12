@@ -76,7 +76,6 @@ describe('overlapping credential rotation', () => {
     expect(new Date(stored.rows[0]!.expiresAt)).toEqual(begun.expiresAt)
     expect(new Date(stored.rows[0]!.validUntil)).toEqual(begun.expiresAt)
     expect(JSON.stringify(stored.rows[0])).not.toContain(begun.challenge)
-
     const confirmed = await confirmCredentialRotation({
       db: getDb(), principal: principal(), credentialId: begun.credentialId, challenge: begun.challenge,
       signature: await challengeSignature(begun.credentialId, begun.challenge, nextKeys.privateKey),
@@ -89,6 +88,13 @@ describe('overlapping credential rotation', () => {
       select valid_until as "validUntil" from app_credentials where id = ${begun.credentialId}
     `)
     expect(activated.rows[0]?.validUntil).toBeNull()
+    const rotationActors = await getDb().execute<{ actorType: string } & Record<string, unknown>>(sql`
+      select actor_type as "actorType" from audit_events
+       where subject_id = ${begun.credentialId}
+         and action in ('SERVICE_CREDENTIAL_ROTATION_BEGUN', 'SERVICE_CREDENTIAL_ROTATION_CONFIRMED')
+       order by action
+    `)
+    expect(rotationActors.rows).toEqual([{ actorType: 'APPLICATION' }, { actorType: 'APPLICATION' }])
     await expect(getActiveCredential({ db: getDb(), credentialId: currentCredentialId, now: new Date(overlapLimit.getTime() - 1) })).resolves.not.toBeNull()
     await expect(getActiveCredential({ db: getDb(), credentialId: currentCredentialId, now: overlapLimit })).resolves.toBeNull()
   })
@@ -164,8 +170,8 @@ describe('overlapping credential rotation', () => {
       select count(*)::int as count from app_credentials
        where source_app_id = ${appId} and status in ('PENDING', 'EXPIRED')
     `)).toBe(MAX_RETAINED_EXPIRED_ROTATIONS + 1)
-    const lifecycleAudits = await getDb().execute<{ action: string; subjectId: string } & Record<string, unknown>>(sql`
-      select action, subject_id as "subjectId" from audit_events
+    const lifecycleAudits = await getDb().execute<{ action: string; subjectId: string; actorType: string } & Record<string, unknown>>(sql`
+      select action, subject_id as "subjectId", actor_type as "actorType" from audit_events
        where request_correlation_id = ${lifecycleCorrelation}
          and action in ('SERVICE_CREDENTIAL_ROTATION_EXPIRED', 'SERVICE_CREDENTIAL_ROTATION_PRUNED')
        order by created_at, id
@@ -173,6 +179,26 @@ describe('overlapping credential rotation', () => {
     expect(lifecycleAudits.rows.filter(({ action }) => action === 'SERVICE_CREDENTIAL_ROTATION_EXPIRED')).toHaveLength(24)
     expect(lifecycleAudits.rows.filter(({ action }) => action === 'SERVICE_CREDENTIAL_ROTATION_PRUNED')).toHaveLength(4)
     expect(new Set(lifecycleAudits.rows.map(({ subjectId }) => subjectId)).size).toBe(24)
+    expect(new Set(lifecycleAudits.rows.map(({ actorType }) => actorType))).toEqual(new Set(['APPLICATION']))
+  })
+
+  it('expires a pending rotation and permits its replacement at the exact validUntil boundary', async () => {
+    const begun = await beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: nextJwk,
+      proof: await rotationProof(nextJwk, 'exact-begin-first'), correlationId: randomUUID(), now,
+    })
+    const replacement = await beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: otherJwk,
+      proof: await rotationProof(otherJwk, 'exact-begin-second', { issuedAt: begun.expiresAt }),
+      correlationId: randomUUID(), now: begun.expiresAt,
+    })
+    expect(replacement.credentialId).not.toBe(begun.credentialId)
+    const statuses = await getDb().execute<{ id: string; status: string } & Record<string, unknown>>(sql`
+      select id, status from app_credentials where id in (${begun.credentialId}, ${replacement.credentialId}) order by id
+    `)
+    expect(new Map(statuses.rows.map(({ id, status }) => [id, status]))).toEqual(new Map([
+      [begun.credentialId, 'EXPIRED'], [replacement.credentialId, 'PENDING'],
+    ]))
   })
 
   it('rolls back durable expiration and its lifecycle audit when the transaction fails', async () => {
@@ -209,6 +235,30 @@ describe('overlapping credential rotation', () => {
       proof: await rotationProof(otherJwk, 'durable-live-second'), correlationId: randomUUID(), now,
     })).rejects.toMatchObject({ code: 'ROTATION_IN_PROGRESS' })
     expect(await count(sql`select count(*)::int as count from app_credentials where status = 'PENDING'`)).toBe(1)
+  })
+
+  it('rolls back both prune audit and deletion when a post-delete step fails', async () => {
+    const correlationId = randomUUID()
+    for (let position = 0; position < MAX_RETAINED_EXPIRED_ROTATIONS + 1; position += 1) {
+      await getDb().execute(sql`
+        insert into app_credentials
+          (id, source_app_id, public_jwk, public_key_thumbprint, status, valid_from, valid_until, rotation_parent_id, created_at)
+        values
+          (${`expired-prune-${position}`}, ${appId}, ${JSON.stringify(nextJwk)}::jsonb, ${`expired-thumb-${position}`},
+           'EXPIRED', ${now}, ${now}, ${currentCredentialId}, ${new Date(now.getTime() + position)})
+      `)
+    }
+    await expect(beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: otherJwk,
+      proof: await rotationProof(otherJwk, 'prune-rollback'), correlationId, now,
+      afterPrunedRotationDeleted: async () => { throw new Error('injected post-prune failure') },
+    })).rejects.toThrow('injected post-prune failure')
+    expect(await count(sql`select count(*)::int as count from app_credentials where id like 'expired-prune-%'`))
+      .toBe(MAX_RETAINED_EXPIRED_ROTATIONS + 1)
+    expect(await count(sql`
+      select count(*)::int as count from audit_events
+       where request_correlation_id = ${correlationId} and action = 'SERVICE_CREDENTIAL_ROTATION_PRUNED'
+    `)).toBe(0)
   })
 
   it('maps only the thumbprint unique race to a deterministic duplicate conflict with no partial writes', async () => {
@@ -280,7 +330,7 @@ describe('overlapping credential rotation', () => {
     })).rejects.toMatchObject({ code: 'INVALID_CHALLENGE' })
     await expect(confirmCredentialRotation({
       db: getDb(), principal: principal(), credentialId: begun.credentialId, challenge: begun.challenge,
-      signature: await challengeSignature(begun.credentialId, begun.challenge, nextKeys.privateKey), overlapSeconds: 1, correlationId: randomUUID(), now: new Date(now.getTime() + 5 * 60_000 + 1),
+      signature: await challengeSignature(begun.credentialId, begun.challenge, nextKeys.privateKey), overlapSeconds: 1, correlationId: randomUUID(), now: begun.expiresAt,
     })).rejects.toMatchObject({ code: 'INVALID_CHALLENGE' })
     await confirmCredentialRotation({
       db: getDb(), principal: principal(), credentialId: begun.credentialId, challenge: begun.challenge,
@@ -336,6 +386,29 @@ describe('overlapping credential rotation', () => {
     await getDb().execute(sql`update source_apps set status = 'PAUSED' where id = ${appId}`)
     await expect(revokeCredential({ db: getDb(), appId, credentialId: last, actorId: appId, correlationId: randomUUID(), now })).resolves.toBe(true)
     await expect(getActiveCredential({ db: getDb(), credentialId: last, now })).resolves.toBeNull()
+  })
+
+  it('records support-initiated revocation as USER and app-initiated revocation as APPLICATION', async () => {
+    await seedCredential('rotation-second', otherJwk, 'ACTIVE')
+    const userCorrelation = randomUUID()
+    const appCorrelation = randomUUID()
+    await revokeCredential({
+      db: getDb(), appId, credentialId: 'rotation-second', actorId: 'support-user',
+      actorType: 'USER', correlationId: userCorrelation, now,
+    })
+    await getDb().execute(sql`update source_apps set status = 'PAUSED' where id = ${appId}`)
+    await revokeCredential({
+      db: getDb(), appId, credentialId: currentCredentialId, actorId: appId,
+      actorType: 'APPLICATION', correlationId: appCorrelation, now,
+    })
+    const actors = await getDb().execute<{ correlationId: string; actorType: string; actorId: string } & Record<string, unknown>>(sql`
+      select request_correlation_id as "correlationId", actor_type as "actorType", actor_id as "actorId"
+        from audit_events where request_correlation_id in (${userCorrelation}, ${appCorrelation})
+    `)
+    expect(actors.rows).toEqual(expect.arrayContaining([
+      { correlationId: userCorrelation, actorType: 'USER', actorId: 'support-user' },
+      { correlationId: appCorrelation, actorType: 'APPLICATION', actorId: appId },
+    ]))
   })
 
   it.each([

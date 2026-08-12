@@ -3,8 +3,10 @@ import { getDb, type Db, type DbTransaction } from '@/lib/db'
 import { auditEvents } from '@/lib/db/schema'
 
 type AuditWriter = Db | DbTransaction
+export type AuditActorType = 'USER' | 'APPLICATION'
 
 export interface AuditMutationContext {
+  actorType?: AuditActorType
   actorId: string
   correlationId: string
   reason: string
@@ -12,6 +14,7 @@ export interface AuditMutationContext {
 
 export interface AppendedAuditEvent {
   id: string
+  actorType: AuditActorType
   actorId: string
   action: string
   subjectType: string
@@ -22,6 +25,7 @@ export interface AppendedAuditEvent {
 
 export async function appendAuditEvent({
   db = getDb(),
+  actorType = 'USER',
   actorId,
   correlationId,
   reason,
@@ -40,6 +44,7 @@ export async function appendAuditEvent({
 }): Promise<AppendedAuditEvent> {
   const event = {
     id: nanoid(),
+    actorType: validatedActorType(actorType),
     actorId: required(actorId, 'actorId'),
     action: required(action, 'action'),
     subjectType: required(subjectType, 'subjectType'),
@@ -52,7 +57,7 @@ export async function appendAuditEvent({
 
   await db.insert(auditEvents).values({
     id: event.id,
-    actorType: 'USER',
+    actorType: event.actorType,
     actorId: event.actorId,
     action: event.action,
     subjectType: event.subjectType,
@@ -68,6 +73,11 @@ function required(value: string, name: string): string {
   const trimmed = value.trim()
   if (!trimmed) throw new Error(`${name} is required`)
   return trimmed
+}
+
+function validatedActorType(value: unknown): AuditActorType {
+  if (value !== 'USER' && value !== 'APPLICATION') throw new Error('Invalid audit actor type')
+  return value
 }
 
 function assertSafeMetadata(value: unknown): void {

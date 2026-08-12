@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { decodeProtectedHeader, importJWK, jwtVerify } from 'jose'
 import { sql } from 'drizzle-orm'
-import { appendAuditEvent } from '@/lib/audit/events'
+import { appendAuditEvent, type AuditActorType } from '@/lib/audit/events'
 import { getDb, type Db, type DbTransaction } from '@/lib/db'
 import type { ServicePrincipal } from '@/lib/service-auth/assertions'
 import { publicJwkThumbprint, validateEd25519PublicJwk, type Ed25519PublicJwk } from '@/lib/service-auth/jwk'
@@ -85,6 +85,7 @@ export async function getActiveCredential({
 export async function beginCredentialRotation({
   db = getDb(), principal, nextPublicJwk, proof, correlationId, now = new Date(),
   afterPendingCreated, afterAuditAppended, afterDuplicateChecked, afterExpiredRotationsAudited,
+  afterPrunedRotationDeleted,
 }: {
   db?: Db
   principal: ServicePrincipal
@@ -96,6 +97,7 @@ export async function beginCredentialRotation({
   afterAuditAppended?: () => Promise<void>
   afterDuplicateChecked?: () => Promise<void>
   afterExpiredRotationsAudited?: () => Promise<void>
+  afterPrunedRotationDeleted?: () => Promise<void>
 }): Promise<RotationChallenge> {
   if (!principal.scopes.includes('credentials:rotate')) throw new RotationError('INVALID_PROOF')
   const nextJwk = safePublicJwk(nextPublicJwk, 'INVALID_PROOF')
@@ -121,7 +123,10 @@ export async function beginCredentialRotation({
         proof, current, principal, expectedThumbprint: nextThumbprint, now,
       })
 
-      await expireAndPruneRotations({ tx, appId: principal.appId, correlationId, now, afterExpiredRotationsAudited })
+      await expireAndPruneRotations({
+        tx, appId: principal.appId, correlationId, now,
+        afterExpiredRotationsAudited, afterPrunedRotationDeleted,
+      })
 
       const duplicate = await tx.execute(sql`
         select 1 from app_credentials where public_key_thumbprint = ${nextThumbprint} limit 1
@@ -159,7 +164,7 @@ export async function beginCredentialRotation({
         values (${randomUUID()}, ${credentialId}, ${`${CHALLENGE_REPLAY_PREFIX}${digest(challenge)}`}, ${expiresAt}, ${now})
       `)
       await appendAuditEvent({
-        db: tx, actorId: principal.appId, correlationId, reason: 'Application credential rotation begun',
+        db: tx, actorType: 'APPLICATION', actorId: principal.appId, correlationId, reason: 'Application credential rotation begun',
         action: 'SERVICE_CREDENTIAL_ROTATION_BEGUN', subjectType: 'app_credential', subjectId: credentialId,
         metadata: { parentCredentialId: current.id }, now,
       })
@@ -246,7 +251,7 @@ export async function confirmCredentialRotation({
     `)
     await afterActivated?.()
     await appendAuditEvent({
-      db: tx, actorId: principal.appId, correlationId, reason: 'Application credential rotation confirmed',
+      db: tx, actorType: 'APPLICATION', actorId: principal.appId, correlationId, reason: 'Application credential rotation confirmed',
       action: 'SERVICE_CREDENTIAL_ROTATION_CONFIRMED', subjectType: 'app_credential', subjectId: pending.id,
       metadata: { parentCredentialId: current.id, overlapSeconds: boundedOverlap }, now,
     })
@@ -256,12 +261,13 @@ export async function confirmCredentialRotation({
 }
 
 export async function revokeCredential({
-  db = getDb(), appId, credentialId, actorId, correlationId, now = new Date(), afterRevoked,
+  db = getDb(), appId, credentialId, actorId, actorType = 'USER', correlationId, now = new Date(), afterRevoked,
 }: {
   db?: Db
   appId: string
   credentialId: string
   actorId: string
+  actorType?: AuditActorType
   correlationId: string
   now?: Date
   afterRevoked?: () => Promise<void>
@@ -290,7 +296,7 @@ export async function revokeCredential({
     `)
     await afterRevoked?.()
     await appendAuditEvent({
-      db: tx, actorId, correlationId, reason: 'Application credential revoked',
+      db: tx, actorType, actorId, correlationId, reason: 'Application credential revoked',
       action: 'SERVICE_CREDENTIAL_REVOKED', subjectType: 'app_credential', subjectId: credentialId, now,
     })
     return true
@@ -385,13 +391,14 @@ function digest(value: string): string {
 }
 
 async function expireAndPruneRotations({
-  tx, appId, correlationId, now, afterExpiredRotationsAudited,
+  tx, appId, correlationId, now, afterExpiredRotationsAudited, afterPrunedRotationDeleted,
 }: {
   tx: DbTransaction
   appId: string
   correlationId: string
   now: Date
   afterExpiredRotationsAudited?: () => Promise<void>
+  afterPrunedRotationDeleted?: () => Promise<void>
 }): Promise<void> {
   const expired = await tx.execute<{ id: string } & Record<string, unknown>>(sql`
     update app_credentials
@@ -403,7 +410,7 @@ async function expireAndPruneRotations({
   `)
   for (const credential of expired.rows) {
     await appendAuditEvent({
-      db: tx, actorId: appId, correlationId, reason: 'Pending credential rotation expired',
+      db: tx, actorType: 'APPLICATION', actorId: appId, correlationId, reason: 'Pending credential rotation expired',
       action: 'SERVICE_CREDENTIAL_ROTATION_EXPIRED', subjectType: 'app_credential', subjectId: credential.id, now,
     })
   }
@@ -420,12 +427,13 @@ async function expireAndPruneRotations({
   `)
   for (const credential of prunable.rows) {
     await appendAuditEvent({
-      db: tx, actorId: appId, correlationId, reason: 'Expired credential rotation pruned by retention policy',
+      db: tx, actorType: 'APPLICATION', actorId: appId, correlationId, reason: 'Expired credential rotation pruned by retention policy',
       action: 'SERVICE_CREDENTIAL_ROTATION_PRUNED', subjectType: 'app_credential', subjectId: credential.id, now,
     })
     await tx.execute(sql`
       delete from app_credentials where id = ${credential.id} and source_app_id = ${appId} and status = 'EXPIRED'
     `)
+    await afterPrunedRotationDeleted?.()
   }
 }
 

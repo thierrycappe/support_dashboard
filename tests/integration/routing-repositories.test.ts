@@ -131,12 +131,15 @@ describe('routing repositories', () => {
 
   it('appends immutable, non-secret audit records', async () => {
     const audit = await appendAuditEvent({ action: 'ROUTING_READ', subjectType: 'support_group', subjectId: 'subject-1', ...mutation })
-    expect(audit).toMatchObject({ action: 'ROUTING_READ', actorId: 'admin-1', requestCorrelationId: testCorrelationId })
+    expect(audit).toMatchObject({ action: 'ROUTING_READ', actorType: 'USER', actorId: 'admin-1', requestCorrelationId: testCorrelationId })
     expect(await scalar(sql`select count(*)::int as count from audit_events where id = ${audit.id}`)).toBe(1)
     await expect(appendAuditEvent({
       action: 'BAD_REASON', subjectType: 'channel', subjectId: 'x', metadata: { reason: 'override' }, ...mutation,
     })).rejects.toThrow('Reserved audit metadata is not allowed')
     await expect(appendAuditEvent({ action: 'BAD', subjectType: 'channel', subjectId: 'x', metadata: { ciphertext: 'never-store-this' }, ...mutation })).rejects.toThrow('Sensitive audit metadata is not allowed')
+    await expect(appendAuditEvent({
+      action: 'BAD_ACTOR', actorType: 'SYSTEM' as never, subjectType: 'channel', subjectId: 'x', ...mutation,
+    })).rejects.toThrow('Invalid audit actor type')
   })
 
   it('does not lock a channel during slow validation and rejects a changed revision', async () => {

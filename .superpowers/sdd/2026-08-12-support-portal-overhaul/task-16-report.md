@@ -203,3 +203,72 @@ The shared worktree currently contains concurrent uncommitted Task 17 RED test f
 ### Concerns
 
 - No Task 16 blocker remains. Full repository gates await the concurrently owned Task 17 component implementation described above.
+
+## Fix Round 3 — Audit Actor Attribution and Boundary Proofs
+
+### Implementation
+
+- Extended `appendAuditEvent` with an explicit `AuditActorType` union (`USER | APPLICATION`), runtime validation, and a backward-compatible `USER` default. Returned audit event records now include their actor type.
+- Rotation begin, confirm, expiration, and prune events explicitly record `actor_type = APPLICATION` and the owning app ID.
+- `revokeCredential` accepts an explicit actor type and defaults to `USER`: support-user initiated revocation remains `USER`, while an app principal can be recorded as `APPLICATION`.
+- Added a post-prune-delete injection point solely for transactional integration proof.
+
+### RED evidence
+
+Command:
+
+```bash
+TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55442/support_task6_test?support_test=1' \
+  npx vitest run --config vitest.integration.config.ts tests/integration/credential-rotation.test.ts --reporter=verbose
+```
+
+Before implementation, four expected assertions failed:
+
+- begin/confirm actors were `USER` rather than `APPLICATION`;
+- expiration/prune lifecycle actors were `USER` rather than `APPLICATION`;
+- app-initiated revoke was `USER` rather than `APPLICATION`;
+- the injected post-prune-delete failure hook was absent, so the transaction committed instead of demonstrating rollback.
+
+Both new exact deadline tests were already GREEN in the RED run, independently confirming that durable expiry uses the correct strict boundary.
+
+### GREEN evidence
+
+Focused live PostgreSQL suites:
+
+```text
+Test Files  2 passed (2)
+Tests       33 passed (33)
+```
+
+They prove default `USER` audit behavior, runtime rejection of an unsupported actor type, all application rotation actor identities, support-user versus app revoke attribution, exact begin replacement at `validUntil`, exact confirm rejection at `validUntil`, and rollback of both prune audit and deletion after a post-delete failure.
+
+Full combined gates after Task 17 implementation became available:
+
+| Command | Result |
+| --- | --- |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm run test:run` | Passed: 32 files, 213 tests |
+| `TEST_DATABASE_URL=... npm run test:integration` | Passed: 14 files, 146 tests |
+| `npm run scenario:check` | Passed: 4 scenarios |
+| `npm run build` | Passed |
+| `git diff --check` | Passed |
+
+### Files
+
+- `lib/audit/events.ts`
+- `lib/service-auth/credentials.ts`
+- `tests/integration/credential-rotation.test.ts`
+- `tests/integration/routing-repositories.test.ts`
+
+### Self-review
+
+- Existing callers remain source- and behavior-compatible through the `USER` default, while invalid runtime values fail before the insert.
+- Application attribution is explicit at every service-auth lifecycle append call; it is not inferred from identifier shape.
+- Revoke retains explicit caller-origin semantics rather than guessing whether an arbitrary actor ID represents an app or user.
+- The deadline boundary is consistent: a pending row is expired and replaceable when `validUntil <= now`; confirmation requires `validUntil > now`.
+- Prune audit append, credential deletion, hook, and subsequent rotation creation share one app-locked transaction; injected failure restores the deleted row and removes the appended prune audit.
+
+### Concerns
+
+- No Task 16 blocker remains. Mandatory Sol re-review remains the approval gate.
