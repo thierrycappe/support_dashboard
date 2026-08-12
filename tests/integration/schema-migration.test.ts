@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { Pool } from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
+import { getTableConfig } from 'drizzle-orm/pg-core'
 import { closeDbPool, getDbPool } from '@/lib/db'
 import { applyMigration } from '@/lib/db/migrations'
 import * as schema from '@/lib/db/schema'
@@ -220,6 +221,69 @@ it('keeps Drizzle and migration column contracts aligned, including UTC timestam
   ])
 })
 
+it('exhaustively matches every Task 2 table contract to PostgreSQL catalogs', async () => {
+  await applyMigration(migrationFixture())
+  const contracts = task2TableContracts()
+  const tableNames = contracts.map((contract) => contract.table)
+  const expectedColumns = contracts.flatMap(({ columns }) => columns)
+    .sort(compareContractRows)
+  const actualColumns = await rehearsalPool.query<ContractColumn>(`
+    select table_name, column_name, is_nullable, data_type, udt_name,
+      column_default is not null as has_default, column_default
+      from information_schema.columns
+     where table_schema = current_schema() and table_name = any($1::text[])
+     order by table_name, ordinal_position
+  `, [tableNames])
+  expect(actualColumns.rows.map(withoutDefaultExpression).sort(compareContractRows)).toEqual(
+    expectedColumns.map(withoutDefaultSignature),
+  )
+  for (const expected of expectedColumns.filter((column) => column.default_signature !== null)) {
+    const actual = actualColumns.rows.find((column) => column.table_name === expected.table_name && column.column_name === expected.column_name)
+    expect(actual?.column_default).toContain(expected.default_signature)
+  }
+
+  const expectedIndexes = contracts.flatMap(({ table, indexes }) => indexes.map((index) => ({ table_name: table, ...index }))).sort(compareContractRows)
+  const actualIndexes = await rehearsalPool.query<ContractIndex>(`
+    select tab.relname as table_name, idx.relname as index_name, ind.indisunique as is_unique,
+      coalesce(string_agg(att.attname, ',' order by key.ordinality) filter (where att.attname is not null), '') as columns,
+      pg_get_expr(ind.indpred, ind.indrelid) as predicate
+      from pg_index ind join pg_class idx on idx.oid = ind.indexrelid
+      join pg_class tab on tab.oid = ind.indrelid join pg_namespace ns on ns.oid = tab.relnamespace
+      left join lateral unnest(ind.indkey) with ordinality as key(attnum, ordinality) on true
+      left join pg_attribute att on att.attrelid = tab.oid and att.attnum = key.attnum
+     where ns.nspname = current_schema() and idx.relname = any($1::text[])
+     group by tab.relname, idx.relname, ind.indisunique, ind.indpred, ind.indrelid
+     order by tab.relname, idx.relname
+  `, [expectedIndexes.map((index) => index.index_name)])
+  expect(actualIndexes.rows).toEqual(expectedIndexes)
+
+  const actualConstraints = await rehearsalPool.query<ForeignKeyContract>(`
+    select child.relname as table_name,
+      string_agg(child_column.attname, ',' order by key.ordinality) as columns,
+      parent.relname as foreign_table,
+      con.confupdtype as on_update, con.confdeltype as on_delete
+      from pg_constraint con join pg_class child on child.oid = con.conrelid
+      join pg_class parent on parent.oid = con.confrelid
+      join pg_namespace ns on ns.oid = child.relnamespace
+      join lateral unnest(con.conkey) with ordinality as key(attnum, ordinality) on true
+      join pg_attribute child_column on child_column.attrelid = child.oid and child_column.attnum = key.attnum
+     where ns.nspname = current_schema() and con.contype = 'f' and child.relname = any($1::text[])
+     group by child.relname, parent.relname, con.confupdtype, con.confdeltype, con.oid
+     order by child.relname, parent.relname, columns
+  `, [tableNames])
+  expect(actualConstraints.rows.sort(compareContractRows)).toEqual(expectedTask2ForeignKeys())
+
+  const primaryKeys = await rehearsalPool.query<{ table_name: string; columns: string[] }>(`
+    select tab.relname as table_name, string_agg(att.attname, ',' order by key.ordinality) as columns
+      from pg_constraint con join pg_class tab on tab.oid = con.conrelid join pg_namespace ns on ns.oid = tab.relnamespace
+      join lateral unnest(con.conkey) with ordinality as key(attnum, ordinality) on true
+      join pg_attribute att on att.attrelid = tab.oid and att.attnum = key.attnum
+     where ns.nspname = current_schema() and con.contype = 'p' and tab.relname = any($1::text[])
+     group by tab.relname order by tab.relname
+  `, [tableNames])
+  expect(primaryKeys.rows).toEqual(contracts.map(({ table, primary_key }) => ({ table_name: table, columns: primary_key.join(',') })).sort(compareContractRows))
+})
+
 it('rejects a database-backed outbox target without its database channel', async () => {
   await applyMigration(migrationFixture())
   await rehearsalPool.query(`insert into escalation_events (id, ticket_id, generation, event_key, payload, created_at)
@@ -237,6 +301,74 @@ function migrationFixture() {
 
 function getColumnConfig(column: unknown): { default: unknown; notNull: boolean } {
   return (column as { config: { default: unknown; notNull: boolean } }).config
+}
+
+type ContractColumn = { table_name: string; column_name: string; is_nullable: string; data_type: string; udt_name: string; has_default: boolean; column_default?: string | null; default_signature?: string | null }
+type ContractIndex = { table_name: string; index_name: string; is_unique: boolean; columns: string; predicate: string | null }
+type ForeignKeyContract = { table_name: string; columns: string; foreign_table: string; on_update: string; on_delete: string }
+type DrizzleColumn = { name: string; primary: boolean; notNull: boolean; default: unknown; getSQLType(): string; enum?: { enumName: string } }
+
+function task2TableContracts() {
+  const tables = [schema.supportGroups, schema.sourceApps, schema.feedbackTickets, schema.appEnrollmentGrants, schema.appCredentials, schema.serviceAssertionReplays, schema.ingestReceipts, schema.escalationEvents, schema.routingIncidents, schema.supportGroupMembers, schema.notificationChannels, schema.appNotificationPolicies, schema.deliveryOutbox, schema.deliveryAttempts, schema.auditEvents, schema.serviceRateLimitBuckets, schema.supportSettings]
+  return tables.map((table) => {
+    const config = getTableConfig(table)
+    return {
+      table: config.name,
+      primary_key: (config.columns as unknown as DrizzleColumn[]).filter((column) => column.primary).map((column) => column.name),
+      columns: (config.columns as unknown as DrizzleColumn[]).map((column) => columnContract(config.name, column)),
+      indexes: config.indexes.map((index) => ({
+        index_name: index.config.name,
+        is_unique: index.config.unique,
+        columns: index.config.columns.map((column) => indexedColumnName(column as { name?: string })).join(','),
+        predicate: index.config.name === 'support_groups_one_central_fallback_idx' ? 'is_central_fallback' : null,
+      })),
+    }
+  })
+}
+
+function columnContract(table_name: string, column: DrizzleColumn): ContractColumn {
+  const sqlType = column.getSQLType()
+  const enumType = column.enum?.enumName as string | undefined
+  const defaultValue = column.default
+  return {
+    table_name, column_name: column.name, is_nullable: column.notNull ? 'NO' : 'YES',
+    data_type: enumType ? 'USER-DEFINED' : sqlType.startsWith('timestamp') ? sqlType.includes('with time zone') ? 'timestamp with time zone' : 'timestamp without time zone' : sqlType,
+    udt_name: enumType ?? (sqlType === 'integer' ? 'int4' : sqlType === 'boolean' ? 'bool' : sqlType.startsWith('timestamp') ? sqlType.includes('with time zone') ? 'timestamptz' : 'timestamp' : sqlType),
+    has_default: defaultValue !== undefined,
+    default_signature: defaultValue === undefined ? null : typeof defaultValue === 'object' ? "'{}'" : String(defaultValue),
+  }
+}
+
+function withoutDefaultExpression(row: ContractColumn): Omit<ContractColumn, 'column_default'> {
+  const column = { ...row }
+  delete column.column_default
+  return column
+}
+
+function withoutDefaultSignature(row: ContractColumn): Omit<ContractColumn, 'default_signature'> {
+  const column = { ...row }
+  delete column.default_signature
+  return column
+}
+
+function indexedColumnName(column: { name?: string }): string {
+  if (!column.name) throw new Error('Task 2 indexes must use named columns')
+  return column.name
+}
+
+function expectedTask2ForeignKeys(): ForeignKeyContract[] {
+  return [
+    ['app_credentials', ['revoked_by_user_id'], 'support_users', 'c', 'n'], ['app_credentials', ['rotation_parent_id'], 'app_credentials', 'c', 'n'], ['app_credentials', ['source_app_id'], 'source_apps', 'c', 'c'],
+    ['app_enrollment_grants', ['created_by_user_id'], 'support_users', 'c', 'n'], ['app_enrollment_grants', ['source_app_id'], 'source_apps', 'c', 'c'], ['app_notification_policies', ['source_app_id'], 'source_apps', 'c', 'c'],
+    ['delivery_attempts', ['outbox_id'], 'delivery_outbox', 'c', 'n'], ['delivery_outbox', ['channel_id'], 'notification_channels', 'c', 'n'], ['delivery_outbox', ['escalation_event_id'], 'escalation_events', 'c', 'c'], ['feedback_tickets', ['source_app_id'], 'source_apps', 'c', 'c'],
+    ['escalation_events', ['ticket_id'], 'feedback_tickets', 'c', 'c'], ['ingest_receipts', ['source_app_id'], 'source_apps', 'c', 'c'], ['ingest_receipts', ['ticket_id'], 'feedback_tickets', 'c', 'n'],
+    ['notification_channels', ['group_id'], 'support_groups', 'c', 'c'], ['routing_incidents', ['escalation_event_id'], 'escalation_events', 'c', 'c'], ['service_assertion_replays', ['credential_id'], 'app_credentials', 'c', 'c'],
+    ['source_apps', ['technical_group_id'], 'support_groups', 'c', 'n'], ['support_group_members', ['group_id'], 'support_groups', 'c', 'c'], ['support_group_members', ['support_user_id'], 'support_users', 'c', 'n'],
+  ].map(([table_name, columns, foreign_table, on_update, on_delete]) => ({ table_name: table_name as string, columns: (columns as string[]).join(','), foreign_table: foreign_table as string, on_update: on_update as string, on_delete: on_delete as string })).sort(compareContractRows)
+}
+
+function compareContractRows(left: Record<string, unknown>, right: Record<string, unknown>): number {
+  return JSON.stringify(left).localeCompare(JSON.stringify(right))
 }
 
 async function expectNamedIndexes(expected: string[]): Promise<void> {
