@@ -74,7 +74,7 @@ export function normalizeFeedbackStatus(value: unknown): FeedbackStatus | undefi
   return aliases[normalized]
 }
 
-function normalizeFeedbackPriority(value: unknown): FeedbackPriority | undefined {
+export function normalizeFeedbackPriority(value: unknown): FeedbackPriority | undefined {
   if (typeof value !== 'string') return undefined
   const normalized = normalizeToken(value)
   const aliases: Record<string, FeedbackPriority> = {
