@@ -35,6 +35,9 @@ export interface FeedbackTriage {
   escalatedAt: string
 }
 
+const utcTimestamp = (name: string) =>
+  timestamp(name, { precision: 3, withTimezone: true })
+
 export const supportUsers = pgTable(
   'support_users',
   {
@@ -51,7 +54,7 @@ export const supportGroups = pgTable(
   {
     id: text('id').primaryKey(), name: text('name').notNull(), status: text('status').notNull().default('ACTIVE'),
     isCentralFallback: boolean('is_central_fallback').notNull().default(false),
-    createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+    createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
   },
   (table) => [uniqueIndex('support_groups_name_idx').on(table.name), uniqueIndex('support_groups_one_central_fallback_idx').on(table.isCentralFallback).where(sql`${table.isCentralFallback}`)],
 )
@@ -63,7 +66,7 @@ export const sourceApps = pgTable(
     environment: text('environment').notNull().default('production'), status: appStatus('status').notNull().default('ACTIVE'),
     enrollmentStatus: enrollmentStatus('enrollment_status').notNull().default('PENDING'), credentialMode: credentialMode('credential_mode').notNull().default('LEGACY_BEARER'),
     technicalGroupId: text('technical_group_id').references(() => supportGroups.id, { onUpdate: 'cascade', onDelete: 'set null' }),
-    lastSeenAt: timestamp('last_seen_at', { precision: 3 }), lastAuthenticatedAt: timestamp('last_authenticated_at', { precision: 3 }), lastIngestedAt: timestamp('last_ingested_at', { precision: 3 }),
+    lastSeenAt: timestamp('last_seen_at', { precision: 3 }), lastAuthenticatedAt: utcTimestamp('last_authenticated_at'), lastIngestedAt: utcTimestamp('last_ingested_at'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>(), createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
   },
   (table) => [uniqueIndex('source_apps_slug_idx').on(table.slug), index('source_apps_status_idx').on(table.status), index('source_apps_group_idx').on(table.technicalGroupId), index('source_apps_last_ingested_idx').on(table.id, table.lastIngestedAt)],
@@ -99,11 +102,11 @@ export const passwordResetTokens = pgTable('password_reset_tokens', {
 }, (table) => [uniqueIndex('password_reset_tokens_hash_idx').on(table.tokenHash), index('password_reset_tokens_user_created_idx').on(table.userId, table.createdAt), index('password_reset_tokens_expires_idx').on(table.expiresAt)])
 
 export const appEnrollmentGrants = pgTable('app_enrollment_grants', {
-  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), tokenDigest: text('token_digest').notNull(), tokenPrefix: text('token_prefix').notNull(), expiresAt: timestamp('expires_at', { precision: 3 }).notNull(), consumedAt: timestamp('consumed_at', { precision: 3 }), revokedAt: timestamp('revoked_at', { precision: 3 }), createdByUserId: text('created_by_user_id').references(() => supportUsers.id, { onUpdate: 'cascade', onDelete: 'set null' }), createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), tokenDigest: text('token_digest').notNull(), tokenPrefix: text('token_prefix').notNull(), expiresAt: utcTimestamp('expires_at').notNull(), consumedAt: utcTimestamp('consumed_at'), revokedAt: utcTimestamp('revoked_at'), createdByUserId: text('created_by_user_id').references(() => supportUsers.id, { onUpdate: 'cascade', onDelete: 'set null' }), createdAt: utcTimestamp('created_at').notNull(),
 }, (table) => [uniqueIndex('app_enrollment_grants_token_digest_idx').on(table.tokenDigest), index('app_enrollment_grants_app_idx').on(table.sourceAppId)])
 
 export const appCredentials = pgTable('app_credentials', {
-  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), publicJwk: jsonb('public_jwk').$type<Record<string, unknown>>().notNull(), publicKeyThumbprint: text('public_key_thumbprint').notNull(), status: credentialStatus('status').notNull().default('PENDING'), validFrom: timestamp('valid_from', { precision: 3 }).notNull(), validUntil: timestamp('valid_until', { precision: 3 }), revokedAt: timestamp('revoked_at', { precision: 3 }), revokedByUserId: text('revoked_by_user_id').references(() => supportUsers.id, { onUpdate: 'cascade', onDelete: 'set null' }), rotationParentId: text('rotation_parent_id'), createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), publicJwk: jsonb('public_jwk').$type<Record<string, unknown>>().notNull(), publicKeyThumbprint: text('public_key_thumbprint').notNull(), status: credentialStatus('status').notNull().default('PENDING'), validFrom: utcTimestamp('valid_from').notNull(), validUntil: utcTimestamp('valid_until'), revokedAt: utcTimestamp('revoked_at'), revokedByUserId: text('revoked_by_user_id').references(() => supportUsers.id, { onUpdate: 'cascade', onDelete: 'set null' }), rotationParentId: text('rotation_parent_id'), createdAt: utcTimestamp('created_at').notNull(),
 }, (table) => [
   uniqueIndex('app_credentials_thumbprint_idx').on(table.publicKeyThumbprint),
   index('app_credentials_app_status_idx').on(table.sourceAppId, table.status),
@@ -115,35 +118,35 @@ export const appCredentials = pgTable('app_credentials', {
 ])
 
 export const serviceAssertionReplays = pgTable('service_assertion_replays', {
-  id: text('id').primaryKey(), credentialId: text('credential_id').notNull().references(() => appCredentials.id, { onUpdate: 'cascade', onDelete: 'cascade' }), assertionJti: text('assertion_jti').notNull(), expiresAt: timestamp('expires_at', { precision: 3 }).notNull(), createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), credentialId: text('credential_id').notNull().references(() => appCredentials.id, { onUpdate: 'cascade', onDelete: 'cascade' }), assertionJti: text('assertion_jti').notNull(), expiresAt: utcTimestamp('expires_at').notNull(), createdAt: utcTimestamp('created_at').notNull(),
 }, (table) => [uniqueIndex('service_assertion_replays_credential_jti_idx').on(table.credentialId, table.assertionJti), index('service_assertion_replays_expires_idx').on(table.expiresAt)])
 
 export const ingestReceipts = pgTable('ingest_receipts', {
-  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), idempotencyKey: text('idempotency_key').notNull(), canonicalDigest: text('canonical_digest').notNull(), ticketId: text('ticket_id').references(() => feedbackTickets.id, { onUpdate: 'cascade', onDelete: 'set null' }), result: text('result').notNull(), responseSnapshot: jsonb('response_snapshot').$type<Record<string, unknown>>().notNull(), createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), idempotencyKey: text('idempotency_key').notNull(), canonicalDigest: text('canonical_digest').notNull(), ticketId: text('ticket_id').references(() => feedbackTickets.id, { onUpdate: 'cascade', onDelete: 'set null' }), result: text('result').notNull(), responseSnapshot: jsonb('response_snapshot').$type<Record<string, unknown>>().notNull(), createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
 }, (table) => [uniqueIndex('ingest_receipts_app_idempotency_idx').on(table.sourceAppId, table.idempotencyKey), index('ingest_receipts_ticket_idx').on(table.ticketId)])
 
 export const escalationEvents = pgTable('escalation_events', {
-  id: text('id').primaryKey(), ticketId: text('ticket_id').notNull().references(() => feedbackTickets.id, { onUpdate: 'cascade', onDelete: 'cascade' }), generation: integer('generation').notNull(), eventKey: text('event_key').notNull(), payload: jsonb('payload').$type<Record<string, unknown>>().notNull(), createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), ticketId: text('ticket_id').notNull().references(() => feedbackTickets.id, { onUpdate: 'cascade', onDelete: 'cascade' }), generation: integer('generation').notNull(), eventKey: text('event_key').notNull(), payload: jsonb('payload').$type<Record<string, unknown>>().notNull(), createdAt: utcTimestamp('created_at').notNull(),
 }, (table) => [uniqueIndex('escalation_events_ticket_generation_idx').on(table.ticketId, table.generation), uniqueIndex('escalation_events_event_key_idx').on(table.eventKey), index('escalation_events_ticket_created_idx').on(table.ticketId, table.createdAt)])
 
 export const routingIncidents = pgTable('routing_incidents', {
-  id: text('id').primaryKey(), escalationEventId: text('escalation_event_id').notNull().references(() => escalationEvents.id, { onUpdate: 'cascade', onDelete: 'cascade' }), reason: text('reason').notNull(), details: jsonb('details').$type<Record<string, unknown>>(), createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), escalationEventId: text('escalation_event_id').notNull().references(() => escalationEvents.id, { onUpdate: 'cascade', onDelete: 'cascade' }), reason: text('reason').notNull(), details: jsonb('details').$type<Record<string, unknown>>(), createdAt: utcTimestamp('created_at').notNull(),
 }, (table) => [uniqueIndex('routing_incidents_event_idx').on(table.escalationEventId)])
 
 export const supportGroupMembers = pgTable('support_group_members', {
-  id: text('id').primaryKey(), groupId: text('group_id').notNull().references(() => supportGroups.id, { onUpdate: 'cascade', onDelete: 'cascade' }), supportUserId: text('support_user_id').references(() => supportUsers.id, { onUpdate: 'cascade', onDelete: 'set null' }), recipientRef: text('recipient_ref'), role: text('role').notNull().default('MEMBER'), status: text('status').notNull().default('ACTIVE'), createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), groupId: text('group_id').notNull().references(() => supportGroups.id, { onUpdate: 'cascade', onDelete: 'cascade' }), supportUserId: text('support_user_id').references(() => supportUsers.id, { onUpdate: 'cascade', onDelete: 'set null' }), recipientRef: text('recipient_ref'), role: text('role').notNull().default('MEMBER'), status: text('status').notNull().default('ACTIVE'), createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
 }, (table) => [uniqueIndex('support_group_members_group_user_idx').on(table.groupId, table.supportUserId), index('support_group_members_group_idx').on(table.groupId)])
 
 export const notificationChannels = pgTable('notification_channels', {
-  id: text('id').primaryKey(), groupId: text('group_id').notNull().references(() => supportGroups.id, { onUpdate: 'cascade', onDelete: 'cascade' }), name: text('name').notNull(), type: channelType('type').notNull(), status: channelStatus('status').notNull().default('ACTIVE'), encryptedConfig: text('encrypted_config').notNull(), configNonce: text('config_nonce').notNull(), configAuthTag: text('config_auth_tag').notNull(), keyVersion: integer('key_version').notNull(), recipientDisplay: text('recipient_display'), redactedDestination: text('redacted_destination'), lastSucceededAt: timestamp('last_succeeded_at', { precision: 3 }), lastFailedAt: timestamp('last_failed_at', { precision: 3 }), createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), groupId: text('group_id').notNull().references(() => supportGroups.id, { onUpdate: 'cascade', onDelete: 'cascade' }), name: text('name').notNull(), type: channelType('type').notNull(), status: channelStatus('status').notNull().default('ACTIVE'), encryptedConfig: text('encrypted_config').notNull(), configNonce: text('config_nonce').notNull(), configAuthTag: text('config_auth_tag').notNull(), keyVersion: integer('key_version').notNull(), recipientDisplay: text('recipient_display'), redactedDestination: text('redacted_destination'), lastSucceededAt: utcTimestamp('last_succeeded_at'), lastFailedAt: utcTimestamp('last_failed_at'), createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
 }, (table) => [uniqueIndex('notification_channels_group_name_idx').on(table.groupId, table.name), index('notification_channels_group_status_idx').on(table.groupId, table.status)])
 
 export const appNotificationPolicies = pgTable('app_notification_policies', {
-  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), minimumPriority: feedbackPriority('minimum_priority').notNull().default('MEDIUM'), urgentCentralCopy: boolean('urgent_central_copy').notNull().default(true), fallbackToCentral: boolean('fallback_to_central').notNull().default(true), createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), sourceAppId: text('source_app_id').notNull().references(() => sourceApps.id, { onUpdate: 'cascade', onDelete: 'cascade' }), minimumPriority: feedbackPriority('minimum_priority').notNull().default('MEDIUM'), urgentCentralCopy: boolean('urgent_central_copy').notNull().default(true), fallbackToCentral: boolean('fallback_to_central').notNull().default(true), createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
 }, (table) => [uniqueIndex('app_notification_policies_app_idx').on(table.sourceAppId)])
 
 export const deliveryOutbox = pgTable('delivery_outbox', {
-  id: text('id').primaryKey(), escalationEventId: text('escalation_event_id').notNull().references(() => escalationEvents.id, { onUpdate: 'cascade', onDelete: 'cascade' }), eventKey: text('event_key').notNull(), targetKey: text('target_key').notNull(), generation: integer('generation').notNull(), channelId: text('channel_id').references(() => notificationChannels.id, { onUpdate: 'cascade', onDelete: 'set null' }), channelType: channelType('channel_type').notNull(), configSource: text('config_source').notNull(), renderedPayload: jsonb('rendered_payload').$type<Record<string, unknown>>().notNull(), status: deliveryStatus('status').notNull().default('PENDING'), nextAttemptAt: timestamp('next_attempt_at', { precision: 3 }).notNull(), attemptCount: integer('attempt_count').notNull().default(0), leaseToken: text('lease_token'), leaseExpiresAt: timestamp('lease_expires_at', { precision: 3 }), sentAt: timestamp('sent_at', { precision: 3 }), createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), escalationEventId: text('escalation_event_id').notNull().references(() => escalationEvents.id, { onUpdate: 'cascade', onDelete: 'cascade' }), eventKey: text('event_key').notNull(), targetKey: text('target_key').notNull(), generation: integer('generation').notNull(), channelId: text('channel_id').references(() => notificationChannels.id, { onUpdate: 'cascade', onDelete: 'set null' }), channelType: channelType('channel_type').notNull(), configSource: text('config_source').notNull(), renderedPayload: jsonb('rendered_payload').$type<Record<string, unknown>>().notNull(), status: deliveryStatus('status').notNull().default('PENDING'), nextAttemptAt: utcTimestamp('next_attempt_at').notNull(), attemptCount: integer('attempt_count').notNull().default(0), leaseToken: text('lease_token'), leaseExpiresAt: utcTimestamp('lease_expires_at'), sentAt: utcTimestamp('sent_at'), createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
 }, (table) => [
   uniqueIndex('delivery_outbox_event_target_generation_idx').on(table.eventKey, table.targetKey, table.generation),
   index('delivery_outbox_claim_idx').on(table.status, table.nextAttemptAt, table.leaseExpiresAt),
@@ -155,17 +158,17 @@ export const deliveryOutbox = pgTable('delivery_outbox', {
 ])
 
 export const deliveryAttempts = pgTable('delivery_attempts', {
-  id: text('id').primaryKey(), outboxId: text('outbox_id').references(() => deliveryOutbox.id, { onUpdate: 'cascade', onDelete: 'set null' }), ordinal: integer('ordinal').notNull(), targetKey: text('target_key').notNull(), startedAt: timestamp('started_at', { precision: 3 }).notNull(), finishedAt: timestamp('finished_at', { precision: 3 }), resultClass: text('result_class').notNull(), providerStatus: text('provider_status'), sanitizedError: text('sanitized_error'), providerMessageId: text('provider_message_id'), createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), outboxId: text('outbox_id').references(() => deliveryOutbox.id, { onUpdate: 'cascade', onDelete: 'set null' }), ordinal: integer('ordinal').notNull(), targetKey: text('target_key').notNull(), startedAt: utcTimestamp('started_at').notNull(), finishedAt: utcTimestamp('finished_at'), resultClass: text('result_class').notNull(), providerStatus: text('provider_status'), sanitizedError: text('sanitized_error'), providerMessageId: text('provider_message_id'), createdAt: utcTimestamp('created_at').notNull(),
 }, (table) => [uniqueIndex('delivery_attempts_outbox_ordinal_idx').on(table.outboxId, table.ordinal), index('delivery_attempts_target_created_idx').on(table.targetKey, table.createdAt)])
 
 export const auditEvents = pgTable('audit_events', {
-  id: text('id').primaryKey(), actorType: text('actor_type').notNull(), actorId: text('actor_id'), action: text('action').notNull(), subjectType: text('subject_type').notNull(), subjectId: text('subject_id'), metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}), requestCorrelationId: text('request_correlation_id'), createdAt: timestamp('created_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), actorType: text('actor_type').notNull(), actorId: text('actor_id'), action: text('action').notNull(), subjectType: text('subject_type').notNull(), subjectId: text('subject_id'), metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}), requestCorrelationId: text('request_correlation_id'), createdAt: utcTimestamp('created_at').notNull(),
 }, (table) => [index('audit_events_subject_created_idx').on(table.subjectType, table.subjectId, table.createdAt), index('audit_events_created_idx').on(table.createdAt)])
 
 export const serviceRateLimitBuckets = pgTable('service_rate_limit_buckets', {
-  id: text('id').primaryKey(), scope: text('scope').notNull(), subject: text('subject').notNull(), windowStart: timestamp('window_start', { precision: 3 }).notNull(), count: integer('count').notNull().default(0), createdAt: timestamp('created_at', { precision: 3 }).notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  id: text('id').primaryKey(), scope: text('scope').notNull(), subject: text('subject').notNull(), windowStart: utcTimestamp('window_start').notNull(), count: integer('count').notNull().default(0), createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
 }, (table) => [uniqueIndex('service_rate_limit_buckets_scope_subject_window_idx').on(table.scope, table.subject, table.windowStart)])
 
 export const supportSettings = pgTable('support_settings', {
-  key: text('key').primaryKey(), value: jsonb('value').$type<Record<string, unknown> | string | number | boolean | null>().notNull(), updatedAt: timestamp('updated_at', { precision: 3 }).notNull(),
+  key: text('key').primaryKey(), value: jsonb('value').$type<Record<string, unknown> | string | number | boolean | null>().notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
 })
