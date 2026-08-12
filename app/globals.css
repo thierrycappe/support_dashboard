@@ -1490,6 +1490,11 @@ pre {
   width: max-content;
 }
 
+.channel-row > .ui-badge {
+  justify-self: start;
+  width: max-content;
+}
+
 .group-members {
   color: var(--muted);
   font-size: var(--text-sm);

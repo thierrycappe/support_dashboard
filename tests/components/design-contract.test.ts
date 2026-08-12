@@ -55,6 +55,7 @@ describe('design accessibility contract', () => {
     expect(css).toMatch(/\.table-secondary\s*\{[\s\S]*?display:\s*block/)
     expect(css).toMatch(/\.group-badges\s*\{[\s\S]*?align-items:\s*start/)
     expect(css).toMatch(/\.group-badges\s+\.ui-badge\s*\{[\s\S]*?justify-self:\s*start[\s\S]*?width:\s*max-content/)
+    expect(css).toMatch(/\.channel-row\s*>\s*\.ui-badge\s*\{[\s\S]*?justify-self:\s*start[\s\S]*?width:\s*max-content/)
   })
 })
 
