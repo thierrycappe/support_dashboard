@@ -1,7 +1,4 @@
-import { eq, max } from 'drizzle-orm'
 import { z } from 'zod'
-import { getDb } from '@/lib/db'
-import { feedbackTickets, sourceApps } from '@/lib/db/schema'
 import {
   feedbackIngestSchema,
   type FeedbackIngestPayload,
@@ -50,19 +47,16 @@ const pullResponseSchema = z.object({
 
 export interface FetchTicketsParams {
   config: SourceAppPullConfig
-  since?: Date | null
   externalId?: string | null
   fetchImpl?: typeof fetch
 }
 
 export async function fetchTicketsFromSource({
   config,
-  since,
   externalId,
   fetchImpl = fetch,
 }: FetchTicketsParams): Promise<FeedbackIngestPayload[]> {
   const url = new URL(config.url)
-  if (since) url.searchParams.set('since', since.toISOString())
   if (externalId) url.searchParams.set('externalId', externalId)
 
   const response = await fetchImpl(url.toString(), {
@@ -88,25 +82,11 @@ export interface PullSourceAppResult {
   errors: string[]
 }
 
-export async function getLastSyncedAtForApp(
-  appSlug: string,
-): Promise<Date | null> {
-  const db = getDb()
-  const [row] = await db
-    .select({ lastSyncedAt: max(feedbackTickets.lastSyncedAt) })
-    .from(feedbackTickets)
-    .innerJoin(sourceApps, eq(sourceApps.id, feedbackTickets.sourceAppId))
-    .where(eq(sourceApps.slug, appSlug))
-
-  return row?.lastSyncedAt ?? null
-}
-
 export interface PullSourceAppOptions {
   appSlug: string
   env?: Env
   fetchImpl?: typeof fetch
   accept?: (payload: FeedbackIngestPayload, authoritativeAppSlug: string) => Promise<IngestResult>
-  resolveSince?: (appSlug: string) => Promise<Date | null>
   logger?: Pick<Console, 'warn'>
 }
 
@@ -115,7 +95,6 @@ export async function pullSourceApp({
   env = process.env,
   fetchImpl = fetch,
   accept,
-  resolveSince = getLastSyncedAtForApp,
   logger = console,
 }: PullSourceAppOptions): Promise<PullSourceAppResult> {
   const result: PullSourceAppResult = {
@@ -132,10 +111,9 @@ export async function pullSourceApp({
     return result
   }
 
-  const since = await resolveSince(appSlug)
   let tickets: FeedbackIngestPayload[]
   try {
-    tickets = await fetchTicketsFromSource({ config, since, fetchImpl })
+    tickets = await fetchTicketsFromSource({ config, fetchImpl })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     result.errors.push(message)

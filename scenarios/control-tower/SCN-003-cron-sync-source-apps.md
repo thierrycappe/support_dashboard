@@ -5,7 +5,7 @@ area: control-tower
 status: active
 last_synced: 2026-05-12
 linked_spec: e2e/scenarios/control-tower/SCN-003.spec.ts
-spec_hash: c62ec0bc
+spec_hash: 686231f3
 ---
 
 # SCN-003 — Periodic pull from configured source apps
@@ -45,3 +45,4 @@ spec_hash: c62ec0bc
 
 - Storing a per-app last-pulled cursor in the database; this scheduled route intentionally performs a full sync.
 - Bidirectional reply sync from the control tower back to source apps (see SCN-001 "Out of scope").
+- Activating the browser E2E scaffold; Task 22 will provide its authenticated source-app fixtures.

@@ -40,6 +40,7 @@ export interface IntakeResult {
 export interface IntakeDependencies {
   db: Db
   portalOrigin?: string
+  scheduleDeliveryWakeup?: () => void
   resolveTargets(
     tx: DbTransaction,
     appId: string,
@@ -69,9 +70,11 @@ export async function acceptEscalation(
   input: AcceptEscalationInput,
   deps?: IntakeDependencies,
 ): Promise<IntakeResult> {
-  const dependencies = deps ?? {
-    db: getDb(),
-    resolveTargets: resolveTargetsFromDb,
+  const dependencies: IntakeDependencies = {
+    db: deps?.db ?? getDb(),
+    portalOrigin: deps?.portalOrigin,
+    scheduleDeliveryWakeup: deps?.scheduleDeliveryWakeup ?? scheduleDeliveryWakeup,
+    resolveTargets: deps?.resolveTargets ?? resolveTargetsFromDb,
   }
   const portalOrigin = trustedPortalOrigin(dependencies.portalOrigin)
   const digest = canonicalEscalationDigest(input.command)
@@ -119,7 +122,7 @@ export async function acceptEscalation(
     await appendAcceptedAudit(tx, input, ticket, acceptedAt)
     return finalizeReceipt(tx, receipt.id, input.appId, ticket, acceptedAt)
   })
-  if (result.result !== 'duplicate') scheduleDeliveryWakeup()
+  if (result.result !== 'duplicate') dependencies.scheduleDeliveryWakeup?.()
   return result
 }
 

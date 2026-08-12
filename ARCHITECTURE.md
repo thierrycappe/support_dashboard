@@ -165,7 +165,7 @@ Append-only log of architectural decisions. Each entry: date, decision, rational
 - **Status:** active | superseded by `<later entry>` | deprecated
 
 ### 2026-05-12 — Outbound pull from source apps (Casal-track)
-- **Decision:** Add an outbound pull path in addition to the inbound `/api/feedback/ingest` push. Source apps configured in `SUPPORT_TOWER_SOURCE_APP_PULL_JSON` expose `GET <url>?since=…|externalId=…` returning the same `feedbackIngestSchema` shape. A Vercel Cron drives bulk reconciliation every 30 minutes; a per-ticket `Refresh from source` button gives admins on-demand reconciliation.
+- **Decision:** Add an outbound pull path in addition to the inbound `/api/feedback/ingest` push. Source apps configured in `SUPPORT_TOWER_SOURCE_APP_PULL_JSON` expose full `GET <url>` and targeted `GET <url>?externalId=…` responses in the same `feedbackIngestSchema` shape. A Vercel Cron drives bulk reconciliation every 30 minutes; a per-ticket `Refresh from source` button gives admins on-demand reconciliation.
 - **Rationale:** Casal-track was emitting `IN_PROGRESS` transitions but not the subsequent close transition, leaving tickets stuck open in the tower. The control tower cannot fix Casal-track's emitter, but pull-with-cursor closes the gap defensively and works for any future source app with the same emit gap.
 - **Alternatives considered:** (a) DB column for a per-app cursor — rejected, `MAX(last_synced_at)` is good enough and avoids a migration. (b) Auto-close tickets that go stale — rejected, data loss risk if the source app simply went quiet. (c) Fix only at the Casal-track emitter — still required, but defence-in-depth here is cheap.
 - **Status:** active

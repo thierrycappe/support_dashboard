@@ -27,6 +27,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  if (parsed.data.app.slug !== authoritativeAppSlug) {
+    return NextResponse.json({ error: 'Source app identity mismatch' }, { status: 409 })
+  }
+
   if (!hasDatabaseUrl()) {
     return NextResponse.json(
       { error: 'DATABASE_URL is not configured' },

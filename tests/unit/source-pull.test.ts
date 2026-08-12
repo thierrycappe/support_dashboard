@@ -63,9 +63,9 @@ describe('source pull configuration', () => {
 })
 
 describe('fetchTicketsFromSource', () => {
-  it('sends a bearer token and parses the response', async () => {
+  it('sends a bearer token without an incremental cursor and parses the response', async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toContain('since=2026-05-01T00%3A00%3A00.000Z')
+      expect(String(url)).not.toContain('since=')
       expect((init?.headers as Record<string, string>).Authorization).toBe(
         'Bearer pull-secret',
       )
@@ -79,7 +79,6 @@ describe('fetchTicketsFromSource', () => {
         url: 'https://casal-track.example.com/api/support-tower/export',
         token: 'pull-secret',
       },
-      since: new Date('2026-05-01T00:00:00.000Z'),
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
 
@@ -138,7 +137,6 @@ describe('pullSourceApp', () => {
       env: envWithCasal,
       fetchImpl: fetchImpl as unknown as typeof fetch,
       accept,
-      resolveSince: async () => null,
     })
 
     expect(result.pulled).toBe(2)
@@ -155,7 +153,6 @@ describe('pullSourceApp', () => {
       env: envWithCasal,
       fetchImpl: vi.fn() as unknown as typeof fetch,
       accept: vi.fn(),
-      resolveSince: async () => null,
     })
 
     expect(result.pulled).toBe(0)
@@ -172,7 +169,6 @@ describe('pullSourceApp', () => {
       env: envWithCasal,
       fetchImpl: fetchImpl as unknown as typeof fetch,
       accept: vi.fn(),
-      resolveSince: async () => null,
       logger: { warn: vi.fn() },
     })
 
@@ -203,7 +199,6 @@ describe('pullSourceApp', () => {
       env: envWithCasal,
       fetchImpl: fetchImpl as unknown as typeof fetch,
       accept,
-      resolveSince: async () => null,
       logger: { warn: vi.fn() },
     })
 
@@ -231,7 +226,6 @@ describe('pullSourceApp', () => {
       env: envWithCasal,
       fetchImpl: fetchImpl as unknown as typeof fetch,
       accept,
-      resolveSince: async () => null,
       logger: { warn: vi.fn() },
     })
 

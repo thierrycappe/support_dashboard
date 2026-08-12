@@ -30,7 +30,8 @@ describe('legacy ingest route', () => {
       body: JSON.stringify(payload),
     }))
 
-    expect(response.status).toBe(201)
-    expect(acceptLegacyPayload).toHaveBeenCalledWith(expect.objectContaining({ authoritativeAppSlug: 'other-app' }))
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({ error: 'Source app identity mismatch' })
+    expect(acceptLegacyPayload).not.toHaveBeenCalled()
   })
 })

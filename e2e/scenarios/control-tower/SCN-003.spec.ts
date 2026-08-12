@@ -1,6 +1,7 @@
-// scaffold:scenario:SCN-003:c62ec0bc
+// scaffold:scenario:SCN-003:686231f3
 import { test, expect } from '@playwright/test'
 
+// Intentionally skipped until Task 22 provisions authenticated source-app fixtures.
 test.describe.skip('SCN-003 — periodic pull from configured source apps', () => {
   test('cron endpoint enumerates configured pull slugs and returns per-app counts', async ({ request }) => {
     const response = await request.get('/api/cron/sync-source-apps', {

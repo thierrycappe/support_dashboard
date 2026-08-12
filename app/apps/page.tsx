@@ -83,8 +83,8 @@ export default async function AppsPage() {
           <p className="subtle">
             For status freshness, source apps should also expose
             `GET /api/support-tower/export` (`Authorization: Bearer
-            &lt;SUPPORT_TOWER_EXPORT_TOKEN&gt;`, accepting `?since=&lt;iso8601&gt;`
-            and `?externalId=&lt;id&gt;`) returning `&#123; tickets: [...] &#125;`
+            &lt;SUPPORT_TOWER_EXPORT_TOKEN&gt;`, accepting optional
+            `?externalId=&lt;id&gt;`) returning `&#123; tickets: [...] &#125;`
             in the same ingest payload shape. The tower pulls this every 30
             minutes (full sync) to refresh ticket state and clear the
             &ldquo;Stale sync&rdquo; indicator, even when nothing changed in the

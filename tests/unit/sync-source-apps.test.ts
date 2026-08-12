@@ -29,7 +29,7 @@ describe('sync-source-apps cron', () => {
     expect(pullSourceApp).not.toHaveBeenCalled()
   })
 
-  it('pulls every configured app with a full sync (resolveSince returns null)', async () => {
+  it('pulls every configured app without a cursor', async () => {
     const req = new Request('https://tower/api/cron/sync-source-apps', {
       headers: { authorization: 'Bearer cron-secret' },
     })
@@ -40,9 +40,6 @@ describe('sync-source-apps cron', () => {
 
     const arg = vi.mocked(pullSourceApp).mock.calls[0][0]
     expect(arg.appSlug).toBe('casal-track')
-    // Full sync: resolveSince must resolve to null so unchanged stale tickets
-    // are still re-ingested and their lastSyncedAt refreshed.
-    expect(arg.resolveSince).toBeDefined()
-    expect(await arg.resolveSince!('casal-track')).toBeNull()
+    expect(arg).not.toHaveProperty('resolveSince')
   })
 })

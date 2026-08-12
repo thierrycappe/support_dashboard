@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm'
 import { getDb, type Db, type DbTransaction } from '@/lib/db'
 import { appNotificationPolicies, sourceApps } from '@/lib/db/schema'
 import { canonicalEscalationDigest, legacyPayloadToCommand } from '@/lib/escalations/contract'
-import { acceptEscalation, type IntakeResult } from '@/lib/escalations/intake'
+import { acceptEscalation, type IntakeDependencies, type IntakeResult } from '@/lib/escalations/intake'
 import { resolveTargetsFromDb } from '@/lib/escalations/repository'
 import { feedbackIngestSchema, type FeedbackIngestPayload, type IngestResult } from '@/lib/feedback/ingest'
 
@@ -14,12 +14,16 @@ export async function acceptLegacyPayload({
   idempotencyKey,
   db = getDb(),
   env = process.env,
+  scheduleDeliveryWakeup,
+  resolveTargets,
 }: {
   payload: FeedbackIngestPayload
   authoritativeAppSlug: string
   idempotencyKey?: string | null
   db?: Db
   env?: Env
+  scheduleDeliveryWakeup?: () => void
+  resolveTargets?: IntakeDependencies['resolveTargets']
 }): Promise<IntakeResult> {
   const parsedPayload = feedbackIngestSchema.parse(payload)
   if (parsedPayload.app.slug !== authoritativeAppSlug) throw new Error('source app identity mismatch')
@@ -30,7 +34,8 @@ export async function acceptLegacyPayload({
   const key = idempotencyKey?.trim() || `legacy:${normalized.command.externalId}:${canonicalEscalationDigest(normalized.command)}`
   return acceptEscalation({ appId: normalized.authoritativeAppId, credentialId: null, idempotencyKey: key, command: normalized.command }, {
     db,
-    resolveTargets: (tx, appId, priority) => resolveLegacyTargets(tx, appId, priority, env),
+    scheduleDeliveryWakeup,
+    resolveTargets: resolveTargets ?? ((tx, appId, priority) => resolveLegacyTargets(tx, appId, priority, env)),
   })
 }
 
