@@ -24,15 +24,15 @@ export interface PublicGroupMember {
 }
 
 export interface TeamOperations {
-  groups: Array<PublicGroup & { members: Array<{ id: string; label: string; role: string; status: 'ACTIVE' | 'DISABLED' }> }>
+  groups: Array<PublicGroup & { members: Array<{ id: string; label: string; supportUserId: string | null; recipientRef: string | null; role: string; status: 'ACTIVE' | 'DISABLED' }> }>
   channels: Array<{ id: string; groupId: string; name: string; type: 'EMAIL' | 'PUSHOVER' | 'WEBHOOK'; status: 'ACTIVE' | 'DISABLED' | 'UNHEALTHY'; destination: string; includeReporterContext: boolean; lastSuccessAt: Date | null; lastFailureAt: Date | null }>
 }
 
 export async function listTeamOperations(db: Db = getDb()): Promise<TeamOperations> {
   const [groups, members, channels] = await Promise.all([
     db.select().from(supportGroups).orderBy(supportGroups.name, supportGroups.id),
-    db.execute<{ id: string; groupId: string; supportUserName: string | null; recipientRef: string | null; role: string; status: string } & Record<string, unknown>>(sql`
-      select member.id, member.group_id as "groupId", user_row.name as "supportUserName", member.recipient_ref as "recipientRef", member.role, member.status
+    db.execute<{ id: string; groupId: string; supportUserId: string | null; supportUserName: string | null; recipientRef: string | null; role: string; status: string } & Record<string, unknown>>(sql`
+      select member.id, member.group_id as "groupId", member.support_user_id as "supportUserId", user_row.name as "supportUserName", member.recipient_ref as "recipientRef", member.role, member.status
         from support_group_members member left join support_users user_row on user_row.id = member.support_user_id
        order by member.group_id, member.created_at, member.id
     `),
@@ -44,7 +44,7 @@ export async function listTeamOperations(db: Db = getDb()): Promise<TeamOperatio
       ...group,
       status: group.status as 'ACTIVE' | 'DISABLED',
       members: members.rows.filter((member) => member.groupId === group.id).map((member) => ({
-        id: member.id, label: member.supportUserName ?? member.recipientRef ?? 'Recipient unavailable', role: member.role,
+        id: member.id, label: member.supportUserName ?? member.recipientRef ?? 'Recipient unavailable', supportUserId: member.supportUserId, recipientRef: member.recipientRef, role: member.role,
         status: member.status as 'ACTIVE' | 'DISABLED',
       })),
     })),

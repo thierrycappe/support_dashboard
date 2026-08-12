@@ -46,6 +46,7 @@ function DeliveryContext({ row, retryAction }: { row: DeliveryOperationsRow; ret
   return <div className="delivery-context">
     {row.sanitizedCause ? <span>{row.sanitizedCause}</span> : <span className="subtle">No delivery issue recorded</span>}
     {row.routingIncident ? <span className="delivery-incident">{row.routingIncident}</span> : null}
+    {!row.retryAvailable ? <span className="delivery-next-action">{row.nextAction}</span> : null}
     {row.retryAvailable && retryAction ? <form action={action}><input type="hidden" name="deliveryId" value={row.id} /><Button type="submit" variant="secondary" loading={pending}><RotateCw size={15} aria-hidden="true" />Retry delivery</Button>{state.status !== 'idle' ? <span className={state.status === 'error' ? 'field-error' : 'action-confirmation'} role={state.status === 'error' ? 'alert' : 'status'}>{state.message}</span> : null}</form> : row.retryAvailable ? <span>Retry delivery</span> : null}
   </div>
 }

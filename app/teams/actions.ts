@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { requireAdminUser } from '@/lib/auth/guards'
 import { createChannel, updateChannel } from '@/lib/routing/channels'
-import { createGroup } from '@/lib/routing/groups'
+import { createGroup, setGroupMembers } from '@/lib/routing/groups'
 
 export type ActionState =
   | { status: 'idle' }
@@ -37,6 +37,11 @@ const replacementSchema = z.object({
   config: z.string().min(1, 'Channel configuration is required').transform((value, context) => {
     try { return JSON.parse(value) as unknown } catch { context.addIssue({ code: 'custom', message: 'Channel configuration must be valid JSON' }); return z.NEVER }
   }),
+})
+const membershipSchema = z.object({
+  groupId: z.string().trim().min(1, 'A technical group is required'),
+  memberIds: z.array(z.string().trim().min(1)).default([]),
+  recipientRefs: z.array(z.string().trim().min(1)).default([]),
 })
 
 export async function createTechnicalGroupAction(_previous: ActionState, formData: FormData): Promise<ActionState> {
@@ -92,6 +97,33 @@ export async function createAlertChannelAction(_previous: ActionState, formData:
   }
   revalidatePath('/teams')
   return { status: 'success', message: 'Alert channel created' }
+}
+
+export async function setTechnicalGroupMembersAction(_previous: ActionState, formData: FormData): Promise<ActionState> {
+  const user = await requireAdminUser()
+  const parsed = membershipSchema.safeParse({
+    groupId: String(formData.get('groupId') ?? ''),
+    memberIds: formData.getAll('memberIds').map(String),
+    recipientRefs: formData.getAll('recipientRefs').flatMap((value) => String(value).split(',').map((item) => item.trim()).filter(Boolean)),
+  })
+  if (!parsed.success) return validationError(parsed.error)
+
+  try {
+    await setGroupMembers({
+      groupId: parsed.data.groupId,
+      members: [
+        ...parsed.data.memberIds.map((supportUserId) => ({ supportUserId })),
+        ...parsed.data.recipientRefs.map((recipientRef) => ({ recipientRef })),
+      ],
+      actorId: user.id,
+      correlationId: randomUUID(),
+      reason: 'Updated technical group members',
+    })
+  } catch {
+    return { status: 'error', message: 'Technical group members were not updated' }
+  }
+  revalidatePath('/teams')
+  return { status: 'success', message: 'Technical group members updated' }
 }
 
 export async function replaceAlertChannelSecretAction(_previous: ActionState, formData: FormData): Promise<ActionState> {

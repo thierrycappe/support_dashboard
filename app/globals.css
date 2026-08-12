@@ -1384,6 +1384,173 @@ pre {
   background: var(--info);
 }
 
+.operations-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-6);
+  padding: 0 0 var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.operations-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  transition: background var(--motion-micro) var(--ease-enter), color var(--motion-micro) var(--ease-enter);
+}
+
+.operations-tabs a:hover {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.operations-tabs a[aria-current='page'] {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.operations-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+
+.operation-status-count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.operations-ledger,
+.operations-section {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.operations-section {
+  margin-top: var(--space-8);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+.group-ledger,
+.channel-ledger {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.group-row,
+.channel-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(220px, 1.4fr) auto auto;
+  align-items: start;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.group-row:last-child,
+.channel-row:last-child {
+  border-bottom: 0;
+}
+
+.group-badges,
+.group-members,
+.delivery-context {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.group-members {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.inline-operation-form,
+.channel-form,
+.group-membership-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+}
+
+.channel-form {
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+}
+
+.channel-form .field:has(textarea),
+.channel-form .check-field {
+  grid-column: span 2;
+}
+
+.group-membership-form {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.8fr) auto;
+}
+
+.membership-options {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.membership-options legend {
+  margin-bottom: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.check-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  color: var(--foreground);
+}
+
+.channel-secret-replacement {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.channel-secret-replacement .inline-operation-form {
+  margin-top: var(--space-3);
+}
+
+.delivery-incident {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.delivery-next-action {
+  color: var(--foreground);
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
 @media (max-width: 1200px) {
   .content {
     padding: var(--space-6);
@@ -1578,8 +1745,46 @@ pre {
   .ui-button,
   .icon-button,
   .ui-page-link,
-  .ui-page-step {
+  .ui-page-step,
+  .operations-tabs a,
+  .check-field {
     min-height: 44px;
+  }
+
+  .operations-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin-right: calc(var(--space-4) * -1);
+    padding-right: var(--space-4);
+    scrollbar-width: thin;
+  }
+
+  .operations-tabs a {
+    flex: 0 0 auto;
+  }
+
+  .operations-strip {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .group-row,
+  .channel-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+  }
+
+  .inline-operation-form,
+  .channel-form,
+  .group-membership-form {
+    grid-template-columns: 1fr;
+  }
+
+  .channel-form .field:has(textarea),
+  .channel-form .check-field,
+  .group-membership-form,
+  .channel-secret-replacement {
+    grid-column: auto;
   }
 
   .ui-pagination {

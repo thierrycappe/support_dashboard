@@ -40,6 +40,16 @@ describe('design accessibility contract', () => {
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.queue-filters\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.queue-heading\s*\{[\s\S]*?align-items:\s*flex-start/)
   })
+
+  it('ships tokenized operational tabs, ledgers, and 44px mobile controls', () => {
+    expect(css).toMatch(/\.operations-tabs\s*\{[\s\S]*?display:\s*flex[\s\S]*?gap:\s*var\(--space-2\)/)
+    expect(css).toMatch(/\.operations-tabs\s+a\[aria-current='page'\]\s*\{[\s\S]*?background:\s*var\(--accent\)/)
+    expect(css).toMatch(/\.operations-strip\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/)
+    expect(css).toMatch(/\.operations-section\s*\{[\s\S]*?border-top:\s*1px solid var\(--border\)/)
+    expect(css).toMatch(/\.group-row,\s*\.channel-row\s*\{[\s\S]*?display:\s*grid/)
+    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.operations-tabs a[\s\S]*?min-height:\s*44px/)
+    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.inline-operation-form,\s*\.channel-form[\s\S]*?grid-template-columns:\s*1fr/)
+  })
 })
 
 function parseThemeTokens(stylesheet: string, selector: string): ThemeTokens {

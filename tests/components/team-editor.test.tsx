@@ -14,6 +14,8 @@ describe('team operations editors', () => {
           id: 'group-platform', name: 'Platform reliability', status: 'ACTIVE', isCentralFallback: true,
           members: [],
         }]}
+        users={[{ id: 'user-maya', name: 'Maya Chen', email: 'maya@example.test' }]}
+        membershipAction={action}
       />,
     )
 
@@ -21,6 +23,9 @@ describe('team operations editors', () => {
     expect(screen.getByText('Central fallback')).toBeVisible()
     expect(screen.getByText(/members appear when a support user or recipient is assigned/i)).toBeVisible()
     expect(screen.getByLabelText('Technical group name')).toBeVisible()
+    expect(screen.getByRole('checkbox', { name: /Maya Chen/ })).toBeVisible()
+    expect(screen.getByLabelText('External recipient references')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Save group members' })).toBeVisible()
   })
 
   it('shows channel health and a redacted destination without rendering configuration secrets', () => {
@@ -33,6 +38,7 @@ describe('team operations editors', () => {
           status: 'UNHEALTHY', destination: 'Webhook hooks.example.test', includeReporterContext: false,
           lastSuccessAt: null, lastFailureAt: new Date('2026-08-12T13:00:00.000Z'),
         }]}
+        replaceAction={action}
       />,
     )
 
@@ -40,5 +46,6 @@ describe('team operations editors', () => {
     expect(screen.getByText('Webhook hooks.example.test')).toBeVisible()
     expect(screen.queryByText(/signingSecret|ciphertext|appToken/i)).toBeNull()
     expect(screen.getByLabelText('Alert channel name')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Replace channel configuration' })).toBeVisible()
   })
 })

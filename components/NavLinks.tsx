@@ -11,7 +11,7 @@ const destinations = [
   { href: '/apps', label: 'Applications', adminOnly: false },
   { href: '/deliveries', label: 'Deliveries', adminOnly: false },
   { href: '/teams', label: 'Teams', adminOnly: true },
-  { href: '/users', label: 'Access', adminOnly: true },
+  { href: '/access', label: 'Access', adminOnly: true },
 ] as const
 
 export default function NavLinks({

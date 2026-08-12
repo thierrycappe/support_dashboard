@@ -58,6 +58,7 @@ describe('product shell', () => {
       'Access',
     ])
     expect(screen.getByRole('link', { name: 'Deliveries' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('link', { name: 'Access' })).toHaveAttribute('href', '/access')
     expect(screen.getByText('2 dead letters')).toBeVisible()
   })
 
@@ -69,7 +70,7 @@ describe('product shell', () => {
 
   it('reveals a deep active destination and exposes explicit mobile scroll controls', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
-    render(<NavLinks pathname="/users" isAdmin />)
+    render(<NavLinks pathname="/access" isAdmin />)
     const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
     setElementClientWidth(navigation.parentElement as HTMLElement, 300)
     setNavigationMetrics(navigation, { clientWidth: 300, scrollWidth: 700, scrollLeft: 400 })
@@ -86,7 +87,7 @@ describe('product shell', () => {
     const { rerender } = render(<NavLinks pathname="/deliveries" isAdmin />)
     vi.mocked(Element.prototype.scrollIntoView).mockClear()
 
-    rerender(<NavLinks pathname="/users" isAdmin />)
+    rerender(<NavLinks pathname="/access" isAdmin />)
 
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'nearest', inline: 'center' })
   })

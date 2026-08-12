@@ -17,6 +17,7 @@ export interface DeliveryOperationsRow {
   sanitizedCause: string | null
   routingIncident: string | null
   retryAvailable: boolean
+  nextAction: string
 }
 
 export interface DeliveryOperationsPage {
@@ -27,7 +28,8 @@ export interface DeliveryOperationsPage {
 
 export async function getDeadLetterCount(db: Db = getDb()): Promise<number> {
   const result = await db.execute<{ count: number } & Record<string, unknown>>(sql`
-    select count(*)::int as count from delivery_outbox where status = 'FAILED'
+    ${currentStateCte}
+    select count(*)::int as count from current_outbox where status = 'FAILED'
   `)
   return Number(result.rows[0]?.count ?? 0)
 }
@@ -47,45 +49,16 @@ export async function getDeliveryOperations({
 }): Promise<DeliveryOperationsPage> {
   if (limit !== 50) throw new Error('Delivery history page size must be 50')
   const decoded = cursor ? decodeCursor(cursor) : null
-  const statusSql = statusesFor(view)
-  const historyCursorSql = view === 'history' && decoded
-    ? sql`and (outbox.created_at, outbox.id) < (${decoded.createdAt}, ${decoded.id})`
-    : sql``
-  const orderSql = view === 'failed' || view === 'history'
-    ? sql`outbox.created_at desc, outbox.id desc`
-    : sql`outbox.next_attempt_at asc, outbox.id asc`
-  const result = await db.execute<DeliveryDbRow>(sql`
-    select outbox.id, outbox.event_key as "eventKey", outbox.channel_type::text as "channelType",
-           outbox.status::text as status, outbox.next_attempt_at as "nextAttemptAt",
-           outbox.created_at as "createdAt", outbox.updated_at as "updatedAt", outbox.attempt_count as "attemptCount",
-           coalesce(channel.name, case when outbox.config_source = 'LEGACY_ENV' then 'Central compatibility route' else 'Channel unavailable' end) as "channelName",
-           coalesce(channel.redacted_destination, channel.recipient_display,
-             case when outbox.config_source = 'LEGACY_ENV' then 'Central notification destination' else 'Destination unavailable' end) as destination,
-           attempt.sanitized_error as "sanitizedCause", incident.reason as "routingIncident"
-      from delivery_outbox outbox
-      left join notification_channels channel on channel.id = outbox.channel_id
-      left join lateral (
-        select sanitized_error from delivery_attempts
-         where outbox_id = outbox.id and sanitized_error is not null
-         order by ordinal desc, created_at desc, id desc limit 1
-      ) attempt on true
-      left join lateral (
-        select routing.reason from routing_incidents routing
-         join escalation_events event on event.id = routing.escalation_event_id
-         where event.id = outbox.escalation_event_id
-         order by routing.created_at desc, routing.id desc limit 1
-      ) incident on true
-     where outbox.status in (${statusSql})
-       ${historyCursorSql}
-     order by ${orderSql}
-     limit ${limit + 1}
-  `)
+  const result = view === 'history'
+    ? await getHistoricalDeliveries(db, decoded, limit)
+    : await getCurrentDeliveries(db, view, limit)
   const hasMore = result.rows.length > limit
   const rows = result.rows.slice(0, limit).map(normalizeDelivery)
   const summaryResult = await db.execute<{ deadLetters: number; routingIncidents: number; unhealthyChannels: number } & Record<string, unknown>>(sql`
+    ${currentStateCte}
     select
-      (select count(*)::int from delivery_outbox where status = 'FAILED') as "deadLetters",
-      (select count(*)::int from routing_incidents) as "routingIncidents",
+      (select count(*)::int from current_outbox where status = 'FAILED') as "deadLetters",
+      (select count(*)::int from current_routing_incidents) as "routingIncidents",
       (select count(*)::int from notification_channels where status = 'UNHEALTHY') as "unhealthyChannels"
   `)
   const last = rows.at(-1)
@@ -104,6 +77,95 @@ function statusesFor(view: DeliveryOperationsView) {
   return sql.join(statuses[view].map((status) => sql`${status}::"DeliveryStatus"`), sql`, `)
 }
 
+const currentStateCte = sql`
+  with latest_events as (
+    select event.id, event.ticket_id, event.event_key
+      from escalation_events event
+     where event.generation = (
+       select max(newer.generation)
+         from escalation_events newer
+        where newer.ticket_id = event.ticket_id
+     )
+  ), current_outbox as (
+    select distinct on (event.ticket_id, outbox.target_key) outbox.*
+      from latest_events event
+      join delivery_outbox outbox on outbox.escalation_event_id = event.id
+     order by event.ticket_id, outbox.target_key, outbox.generation desc, outbox.created_at desc, outbox.id desc
+  ), current_routing_incidents as (
+    select incident.id, incident.escalation_event_id, incident.reason, incident.created_at, event.event_key
+      from latest_events event
+      join routing_incidents incident on incident.escalation_event_id = event.id
+  ), current_incidents as (
+    select incident.id, incident.reason, incident.created_at, incident.event_key
+      from current_routing_incidents incident
+     where not exists (
+       select 1 from delivery_outbox outbox where outbox.escalation_event_id = incident.escalation_event_id
+     )
+  )
+`
+
+async function getCurrentDeliveries(db: Db, view: Exclude<DeliveryOperationsView, 'history'>, limit: number) {
+  const statusSql = statusesFor(view)
+  const orderSql = view === 'failed'
+    ? sql`current."createdAt" desc, current.id desc`
+    : sql`current."nextAttemptAt" asc nulls last, current.id asc`
+  return db.execute<DeliveryDbRow>(sql`
+    ${currentStateCte}, current_rows as (
+      select outbox.id, outbox.event_key as "eventKey", outbox.channel_type::text as "channelType",
+             outbox.status::text as status, outbox.next_attempt_at as "nextAttemptAt",
+             outbox.created_at as "createdAt", outbox.updated_at as "updatedAt", outbox.attempt_count as "attemptCount",
+             coalesce(channel.name, case when outbox.config_source = 'LEGACY_ENV' then 'Central compatibility route' else 'Channel unavailable' end) as "channelName",
+             coalesce(channel.redacted_destination, channel.recipient_display,
+               case when outbox.config_source = 'LEGACY_ENV' then 'Central notification destination' else 'Destination unavailable' end) as destination,
+             attempt.sanitized_error as "sanitizedCause", incident.reason as "routingIncident"
+        from current_outbox outbox
+        left join notification_channels channel on channel.id = outbox.channel_id
+        left join lateral (
+          select sanitized_error from delivery_attempts
+           where outbox_id = outbox.id and sanitized_error is not null
+           order by ordinal desc, created_at desc, id desc limit 1
+        ) attempt on true
+        left join routing_incidents incident on incident.escalation_event_id = outbox.escalation_event_id
+      union all
+      select concat('incident:', incident.id), incident.event_key, 'WEBHOOK', 'FAILED', null::timestamptz,
+             incident.created_at, incident.created_at, 0::int, 'Routing decision', 'No active technical route',
+             null, incident.reason
+        from current_incidents incident
+    )
+    select * from current_rows current
+     where current.status::"DeliveryStatus" in (${statusSql})
+     order by ${orderSql}
+     limit ${limit + 1}
+  `)
+}
+
+async function getHistoricalDeliveries(db: Db, decoded: DeliveryCursor | null, limit: number) {
+  const historyCursorSql = decoded
+    ? sql`and (outbox.created_at, outbox.id) < (${decoded.createdAt}, ${decoded.id})`
+    : sql``
+  return db.execute<DeliveryDbRow>(sql`
+    select outbox.id, outbox.event_key as "eventKey", outbox.channel_type::text as "channelType",
+           outbox.status::text as status, outbox.next_attempt_at as "nextAttemptAt",
+           outbox.created_at as "createdAt", outbox.updated_at as "updatedAt", outbox.attempt_count as "attemptCount",
+           coalesce(channel.name, case when outbox.config_source = 'LEGACY_ENV' then 'Central compatibility route' else 'Channel unavailable' end) as "channelName",
+           coalesce(channel.redacted_destination, channel.recipient_display,
+             case when outbox.config_source = 'LEGACY_ENV' then 'Central notification destination' else 'Destination unavailable' end) as destination,
+           attempt.sanitized_error as "sanitizedCause", incident.reason as "routingIncident"
+      from delivery_outbox outbox
+      left join notification_channels channel on channel.id = outbox.channel_id
+      left join lateral (
+        select sanitized_error from delivery_attempts
+         where outbox_id = outbox.id and sanitized_error is not null
+         order by ordinal desc, created_at desc, id desc limit 1
+      ) attempt on true
+      left join routing_incidents incident on incident.escalation_event_id = outbox.escalation_event_id
+     where outbox.status in (${statusesFor('history')})
+       ${historyCursorSql}
+     order by outbox.created_at desc, outbox.id desc
+     limit ${limit + 1}
+  `)
+}
+
 interface DeliveryDbRow extends Record<string, unknown> {
   id: string; eventKey: string; channelName: string; destination: string; channelType: DeliveryOperationsRow['channelType']
   status: DeliveryOperationsRow['status']; nextAttemptAt: Date | string | null; createdAt: Date | string; updatedAt: Date | string
@@ -114,7 +176,10 @@ function normalizeDelivery(row: DeliveryDbRow): DeliveryOperationsRow {
   return {
     ...row,
     nextAttemptAt: asDate(row.nextAttemptAt), createdAt: asDate(row.createdAt)!, updatedAt: asDate(row.updatedAt)!,
-    attemptCount: Number(row.attemptCount), retryAvailable: row.status === 'FAILED',
+    attemptCount: Number(row.attemptCount), retryAvailable: row.status === 'FAILED' && !row.id.startsWith('incident:'),
+    nextAction: row.id.startsWith('incident:')
+      ? 'Configure an active technical route, then resend the escalation.'
+      : row.status === 'FAILED' ? 'Retry delivery' : 'Monitor delivery state',
   }
 }
 

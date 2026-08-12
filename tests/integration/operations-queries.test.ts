@@ -58,6 +58,47 @@ describe('operations read models', () => {
     expect(auditRows).toHaveLength(55)
     expect(new Set(auditRows.map((row) => row.id)).size).toBe(55)
   })
+
+  it('uses only the latest escalation event and latest target generation for live delivery state', async () => {
+    await seedTicket('ticket-current')
+    await seedEventDelivery({
+      ticketId: 'ticket-current', eventId: 'event-current-1', eventKey: 'current-1', eventGeneration: 1,
+      id: 'failed-stale', targetKey: 'channel:channel-release', generation: 1, status: 'FAILED', createdAt: new Date('2026-08-12T13:00:00.000Z'),
+    })
+    await seedEventDelivery({
+      ticketId: 'ticket-current', eventId: 'event-current-2', eventKey: 'current-2', eventGeneration: 2,
+      id: 'retry-stale-generation', targetKey: 'channel:channel-release', generation: 1, status: 'RETRYING', createdAt: new Date('2026-08-12T14:01:00.000Z'),
+    })
+    await seedOutbox({ id: 'sent-secondary-current', eventId: 'event-current-2', eventKey: 'current-2', targetKey: 'channel:channel-release', generation: 2, status: 'SENT', createdAt: new Date('2026-08-12T14:02:00.000Z') })
+
+    const [failed, retrying] = await Promise.all([
+      getDeliveryOperations({ db: getDb(), view: 'failed', limit: 50 }),
+      getDeliveryOperations({ db: getDb(), view: 'retrying', limit: 50 }),
+    ])
+
+    expect(failed.rows.map((row) => row.id)).not.toContain('failed-stale')
+    expect(retrying.rows.map((row) => row.id)).not.toContain('retry-stale-generation')
+    expect(failed.summary.deadLetters).toBe(0)
+  })
+
+  it('projects a current routing incident without an outbox row as an actionable failed delivery', async () => {
+    await seedTicket('ticket-unroutable')
+    await getDb().execute(sql`
+      insert into escalation_events (id, ticket_id, generation, event_key, payload, created_at)
+      values ('event-unroutable', 'ticket-unroutable', 1, 'unroutable-1', '{}'::jsonb, ${now})
+    `)
+    await getDb().execute(sql`
+      insert into routing_incidents (id, escalation_event_id, reason, details, created_at)
+      values ('incident-unroutable', 'event-unroutable', 'No active central fallback is available.', '{}'::jsonb, ${now})
+    `)
+
+    const failed = await getDeliveryOperations({ db: getDb(), view: 'failed', limit: 50 })
+    expect(failed.rows).toContainEqual(expect.objectContaining({
+      id: 'incident:incident-unroutable', status: 'FAILED', routingIncident: 'No active central fallback is available.',
+      nextAction: 'Configure an active technical route, then resend the escalation.', retryAvailable: false,
+    }))
+    expect(failed.summary.routingIncidents).toBe(1)
+  })
 })
 
 async function seedBase(): Promise<void> {
@@ -115,6 +156,34 @@ async function seedDelivery(input: { id: string; status: string; nextAttemptAt: 
       values (${`incident-${input.id}`}, ${eventId}, ${input.routingIncident}, '{}'::jsonb, ${input.createdAt})
     `)
   }
+}
+
+async function seedTicket(id: string): Promise<void> {
+  await getDb().execute(sql`
+    insert into feedback_tickets
+      (id, source_app_id, external_id, kind, status, priority, title, description, url, raw_payload, last_synced_at, created_at, updated_at)
+    values (${id}, 'app-amber', ${`external-${id}`}, 'BUG', 'NEW', 'HIGH', ${`Delivery ${id}`}, 'Details', 'https://amber.example.test/delivery', '{}'::jsonb, ${now}, ${now}, ${now})
+  `)
+}
+
+async function seedEventDelivery(input: { ticketId: string; eventId: string; eventKey: string; eventGeneration: number; id: string; targetKey: string; generation: number; status: string; createdAt: Date }): Promise<void> {
+  await getDb().execute(sql`
+    insert into escalation_events (id, ticket_id, generation, event_key, payload, created_at)
+    values (${input.eventId}, ${input.ticketId}, ${input.eventGeneration}, ${input.eventKey}, '{}'::jsonb, ${input.createdAt})
+    on conflict (id) do nothing
+  `)
+  await seedOutbox(input)
+}
+
+async function seedOutbox(input: { id: string; eventId: string; eventKey: string; targetKey: string; generation: number; status: string; createdAt: Date }): Promise<void> {
+  await getDb().execute(sql`
+    insert into delivery_outbox
+      (id, escalation_event_id, event_key, target_key, generation, channel_id, channel_type, config_source,
+       rendered_payload, status, next_attempt_at, attempt_count, sent_at, created_at, updated_at)
+    values (${input.id}, ${input.eventId}, ${input.eventKey}, ${input.targetKey}, ${input.generation}, 'channel-release', 'EMAIL', 'DATABASE',
+      '{}'::jsonb, ${input.status}::"DeliveryStatus", ${input.createdAt}, 3,
+      ${input.status === 'SENT' ? input.createdAt : null}, ${input.createdAt}, ${input.createdAt})
+  `)
 }
 
 async function seedAudit(id: string, createdAt: Date): Promise<void> {

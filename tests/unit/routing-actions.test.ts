@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   requireAdminUser: vi.fn(),
   requireDeliveryRetryUser: vi.fn(),
   createGroup: vi.fn(),
+  setGroupMembers: vi.fn(),
   createChannel: vi.fn(),
   updateChannel: vi.fn(),
   setAppPolicy: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('@/lib/auth/guards', () => ({
   requireAdminUser: mocks.requireAdminUser,
   requireDeliveryRetryUser: mocks.requireDeliveryRetryUser,
 }))
-vi.mock('@/lib/routing/groups', () => ({ createGroup: mocks.createGroup }))
+vi.mock('@/lib/routing/groups', () => ({ createGroup: mocks.createGroup, setGroupMembers: mocks.setGroupMembers }))
 vi.mock('@/lib/routing/channels', () => ({ createChannel: mocks.createChannel, updateChannel: mocks.updateChannel }))
 vi.mock('@/lib/routing/policies', () => ({ setAppPolicy: mocks.setAppPolicy }))
 vi.mock('@/lib/delivery/repository', () => ({
@@ -29,7 +30,7 @@ vi.mock('@/lib/delivery/repository', () => ({
 vi.mock('@/lib/delivery/worker', () => ({ scheduleDeliveryWakeup: mocks.scheduleDeliveryWakeup }))
 vi.mock('next/cache', () => ({ revalidatePath: mocks.revalidatePath }))
 
-import { createAlertChannelAction, createTechnicalGroupAction, replaceAlertChannelSecretAction } from '@/app/teams/actions'
+import { createAlertChannelAction, createTechnicalGroupAction, replaceAlertChannelSecretAction, setTechnicalGroupMembersAction } from '@/app/teams/actions'
 import { updateAppPolicyAction } from '@/app/apps/actions'
 import { retryDeliveryAction } from '@/app/deliveries/actions'
 
@@ -41,6 +42,7 @@ beforeEach(() => {
   mocks.requireAdminUser.mockResolvedValue(admin)
   mocks.requireDeliveryRetryUser.mockResolvedValue(admin)
   mocks.createGroup.mockResolvedValue({ id: 'group-1' })
+  mocks.setGroupMembers.mockResolvedValue([])
   mocks.createChannel.mockResolvedValue({ id: 'channel-1' })
   mocks.updateChannel.mockResolvedValue({ id: 'channel-1' })
   mocks.setAppPolicy.mockResolvedValue({ sourceAppId: 'app-1' })
@@ -66,6 +68,12 @@ describe('routing administration actions', () => {
     expect(mocks.createChannel).not.toHaveBeenCalled()
   })
 
+  it('rejects an unauthenticated user before changing technical-group members', async () => {
+    mocks.requireAdminUser.mockRejectedValue(new Error('NEXT_REDIRECT'))
+    await expect(setTechnicalGroupMembersAction({ status: 'idle' }, form({ groupId: 'group-1', memberIds: 'user-1' }))).rejects.toThrow('NEXT_REDIRECT')
+    expect(mocks.setGroupMembers).not.toHaveBeenCalled()
+  })
+
   it('rejects a support user before an app-policy mutation', async () => {
     mocks.requireAdminUser.mockRejectedValue(new Error('NEXT_REDIRECT'))
 
@@ -85,6 +93,16 @@ describe('routing administration actions', () => {
       name: 'Platform', status: 'ACTIVE', actorId: 'admin-1', reason: 'Created technical group',
     }))
     expect(mocks.revalidatePath).toHaveBeenCalledWith('/teams')
+  })
+
+  it('sets selected users and external recipients through the guarded membership action', async () => {
+    await expect(setTechnicalGroupMembersAction({ status: 'idle' }, form({
+      groupId: 'group-1', memberIds: 'user-1', recipientRefs: 'vendor-oncall, partner-escalation',
+    }))).resolves.toEqual({ status: 'success', message: 'Technical group members updated' })
+    expect(mocks.setGroupMembers).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'group-1', actorId: 'admin-1', reason: 'Updated technical group members',
+      members: [{ supportUserId: 'user-1' }, { recipientRef: 'vendor-oncall' }, { recipientRef: 'partner-escalation' }],
+    }))
   })
 
   it('returns visible Zod field errors without calling repositories', async () => {

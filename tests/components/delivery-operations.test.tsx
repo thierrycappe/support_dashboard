@@ -17,6 +17,7 @@ const failedDelivery: DeliveryOperationsRow = {
   sanitizedCause: 'The destination rejected this message.',
   routingIncident: 'No active central fallback is available.',
   retryAvailable: true,
+  nextAction: 'Retry delivery',
 }
 
 describe('delivery operations table', () => {
@@ -59,5 +60,15 @@ describe('delivery operations table', () => {
 
     expect(screen.getByRole('heading', { name: 'No deliveries are retrying' })).toBeVisible()
     expect(screen.getByText(/retrying deliveries appear after a temporary provider failure/i)).toBeVisible()
+  })
+
+  it('shows an unroutable incident as a failed operational row with a next action instead of a retry', () => {
+    render(<DeliveryTable view="failed" rows={[{
+      ...failedDelivery, id: 'incident:routing-amber', channelName: 'Routing decision', destination: 'No active technical route',
+      retryAvailable: false, sanitizedCause: null, routingIncident: 'No active central fallback is available.',
+      nextAction: 'Configure an active technical route, then resend the escalation.',
+    }]} deadLetterCount={0} routingIncidentCount={1} />)
+    expect(screen.getByText('Configure an active technical route, then resend the escalation.')).toBeVisible()
+    expect(screen.queryByText('Retry delivery')).toBeNull()
   })
 })
