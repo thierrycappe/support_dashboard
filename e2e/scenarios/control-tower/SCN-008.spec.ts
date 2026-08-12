@@ -33,9 +33,12 @@ test('SCN-008 — a next key activates, overlaps, and supersedes a revoked old k
 
   await exchangeServiceToken(request, connector)
   await exchangeServiceToken(request, connector, nextKeys.privateKey, challenge.credentialId)
+  // Confirmation timestamps are committed by the server. Use a fresh
+  // revocation boundary so both overlap credentials are authoritative active.
+  const revokeAt = new Date(Date.now() + 1_000)
   await revokeCredential({
     db: drizzle(scenario.db, { schema }), appId: connector.appId, credentialId: connector.credentialId,
-    actorId: 'task22-admin', actorType: 'USER', correlationId: randomUUID(),
+    actorId: 'task22-admin', actorType: 'USER', correlationId: randomUUID(), now: revokeAt,
   })
   const oldNow = Math.floor(Date.now() / 1_000)
   const oldAssertion = await new SignJWT({ scope: 'escalations:write credentials:rotate' })

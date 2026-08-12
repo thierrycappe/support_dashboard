@@ -12,3 +12,4 @@ tsconfig.tsbuildinfo
 !.env.example
 .worktrees/
 playwright/.auth/
+playwright/.runtime/

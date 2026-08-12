@@ -70,3 +70,54 @@ All database URLs below were the approved disposable local URL ending in `_test`
 
 - Playwright's Next development server emits the existing multiple-lockfile workspace-root warning and Node's existing `module.register()` deprecation warning; neither affects the verified journeys.
 - The test schema launcher uses `drizzle-kit push --force` only against an explicitly approved disposable browser database. It refuses non-`_test` databases and URLs without `support_test=1`.
+
+## Fix Round 1 — production-path journeys and fixture safety
+
+### Implementation
+
+- Replaced SCN-007's repository-level simulation with `runDeliverySweep` and `dispatchDelivery`, sending through the production Pushover adapter to a complete local HTTP provider. Added an optional, bounded, deduplicated `deliveryIds` scope to the production claim path so the journey can claim only its randomized row without touching unrelated work.
+- Replaced SCN-010's injected pull seams with the real authorized `/api/cron/sync-source-apps` route and default pull/acceptance path. The isolated app container serves a generated-CA HTTPS source on a public documentation-range address, trusts only that ephemeral CA, and exercises the hardened pinned-DNS validation unchanged.
+- Added a Docker-isolated launcher with a minimal allowlisted child environment. It never inherits real provider, signing, auth, keyring, or database credentials; generated test secrets live only in a mode-0600 env file mounted into the disposable container and never appear in Docker arguments or logs.
+- Made the Playwright target guard accept only normalized loopback origins with no credentials, path, query, or fragment. Remote mutation is refused unconditionally.
+- Added exact-prefix/labeled container and network cleanup plus removal of runtime env/JSON and ephemeral CA material on normal exit, signals, startup failures, and subsequent stale-run startup.
+- Strengthened SCN-009 to compare shipped light/dark computed colors and prove computed transition durations collapse under reduced motion. Its keyboard check uses a real focus traversal and responsive checks remain at 1024, 390, and 320 pixels.
+- Randomized and explicitly cleaned scenario-owned rows. SCN-007 delays only its own row from background wakeups and scopes both sweeps; SCN-010 deletes only its randomized source application graph through existing cascades.
+- Added the local development origin required by the isolated container and made the rotation journey use an authoritative post-confirmation revocation boundary.
+
+### RED evidence
+
+- `npx vitest run tests/unit/playwright-environment.test.ts` initially failed because the strict target/environment module did not exist. The retained table-driven suite now covers remote targets (including the former override), private/non-loopback hosts, credentials, path/query/fragment, inherited secret removal, and Docker env-file argument construction.
+- The retained delivery-worker integration mutation used `aaa-job-unrelated` ahead of `zzz-job-scoped`; before production scoping, the requested fixture stayed PENDING and the unrelated row was claimed.
+- The first production-adapter browser run reported SCN-007 `{ claimed: 0, started: 0 }` because the Next wakeup raced its eligible row. Moving only that randomized row into the future and passing an explicit sweep clock removed the race without pausing background behavior.
+- SCN-009 initially failed exact string comparison because Chromium serialized `0.01ms` in scientific notation. Numeric normalization plus a positive normal-motion assertion now catches removed or ineffective reduced-motion CSS.
+- SCN-010's earlier injected implementation was deleted. The replacement initially could not start because the minimal container lacked OpenSSL; installing it in the test-only image made the generated-CA/default-route journey executable.
+- Launcher shutdown initially left a labeled empty Docker network and runtime files because `npx` intercepted Playwright's signal. Direct `exec` signal propagation and exact retrying cleanup made post-run resource assertions empty.
+
+### GREEN evidence
+
+All database-backed commands used the approved disposable localhost database `support_task22_fix_test` with `support_test=1`; credentials are intentionally omitted.
+
+- `npx vitest run tests/unit/playwright-environment.test.ts` — PASS, 1 file / 10 tests.
+- `npx vitest run --config vitest.integration.config.ts tests/integration/delivery-worker.test.ts` — PASS, 1 file / 16 tests.
+- `npx playwright test --project=chromium` — PASS, 7/7 in 22.8 seconds (real auth plus SCN-005–010).
+- `npx playwright test --project=mobile-chrome --project=mobile-safari` — PASS, 3/3 in 13.9 seconds.
+- `npm run test:run` — PASS, 50 files / 367 tests.
+- `npm run test:integration` — PASS, 17 files / 165 tests in 27.31 seconds. An earlier invocation was accidentally overlapped with another full integration process and produced catalog/FK interference; the required unattended single serial command passed after both exited.
+- `npm run typecheck` — PASS.
+- `npm run scenario:check` — PASS, 10 scenarios in sync.
+- `npm run lint` — PASS.
+- `npm run build` — PASS, optimized production build and route generation completed.
+- `git diff --check` — PASS.
+
+### Files and self-review
+
+- Safety/launcher: `.dockerignore`, `.gitignore`, `playwright.config.ts`, `next.config.ts`, and `e2e/setup/{Dockerfile,container-launcher.ts,environment.ts,launch-server.ts,start-server.ts}`.
+- Journeys: `SCN-007.spec.ts`, `SCN-008.spec.ts`, `SCN-009.spec.ts`, and `SCN-010.spec.ts`.
+- Scoped worker support and tests: `lib/delivery/{repository.ts,worker.ts}`, `tests/integration/delivery-worker.test.ts`, and `tests/unit/playwright-environment.test.ts`.
+- No production SSRF exception or test-only application route was added. SCN-007's provider is local and injected only through the adapter's existing fetch seam; SCN-010 traverses the production cron/default pull stack.
+- No auth state, env file, certificate, provider credential, keyring, plaintext secret, Playwright report, or screenshot is included. Post-browser inspection found no Task 22 container, network, runtime file, CA directory, or browser process.
+- Concurrent Task 23/24 documentation, package, route, scripts, and tests remain unstaged.
+
+### Concerns
+
+- Next development mode logs an existing server/client timezone hydration warning on delivery timestamps because the host and isolated container use different time zones. It does not alter the production-path assertions, but timestamp formatting should use an explicit shared time zone in a later UI hardening pass.

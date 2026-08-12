@@ -1,8 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 import { resolve } from 'node:path'
+import { resolveSupportE2eBaseUrl } from './e2e/setup/environment'
 
-const PORT = process.env.PORT || '3000'
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${PORT}`
+const BASE_URL = resolveSupportE2eBaseUrl()
 const AUTH_FILE = resolve(process.cwd(), 'playwright/.auth/admin.json')
 
 export default defineConfig({
@@ -23,10 +23,11 @@ export default defineConfig({
   },
 
   webServer: {
-    command: 'npx tsx e2e/setup/start-server.ts',
+    command: 'exec node_modules/.bin/tsx e2e/setup/launch-server.ts',
     url: BASE_URL,
     reuseExistingServer: false,
     timeout: 120_000,
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 30_000 },
   },
 
   projects: [

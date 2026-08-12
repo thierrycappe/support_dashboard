@@ -32,6 +32,34 @@ afterAll(async () => {
 })
 
 describe('runDeliverySweep', () => {
+  it('claims only explicitly scoped delivery IDs when a bounded sweep requests them', async () => {
+    await seedOutbox('zzz-job-scoped')
+    await seedOutbox('aaa-job-unrelated', { generation: 2 })
+
+    const result = await runDeliverySweep({
+      db: getDb(), limit: 1, now, workerId: 'scoped-worker', deliveryIds: ['zzz-job-scoped'],
+      legacyConfig: legacyConfig(), send: async () => sent(),
+    })
+
+    expect(result).toMatchObject({ claimed: 1, started: 1, sent: 1 })
+    expect((await outbox('zzz-job-scoped')).status).toBe('SENT')
+    expect((await outbox('aaa-job-unrelated')).status).toBe('PENDING')
+  })
+
+  it('bounds and deduplicates an explicit delivery claim scope', async () => {
+    await seedOutbox('job-scoped-once')
+    await expect(runDeliverySweep({
+      db: getDb(), limit: 2, now, workerId: 'deduplicated-worker',
+      deliveryIds: ['job-scoped-once', 'job-scoped-once'], legacyConfig: legacyConfig(), send: async () => sent(),
+    })).resolves.toMatchObject({ claimed: 1, started: 1, sent: 1 })
+
+    await expect(runDeliverySweep({
+      db: getDb(), limit: 1, now, workerId: 'oversized-worker',
+      deliveryIds: Array.from({ length: 101 }, (_, index) => `job-${index}`),
+      legacyConfig: legacyConfig(), send: async () => sent(),
+    })).rejects.toThrow('Delivery claim scope is too large')
+  })
+
   it('uses SKIP LOCKED so two workers begin each legacy job once', async () => {
     await seedOutbox('job-a')
     await seedOutbox('job-b')

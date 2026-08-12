@@ -143,22 +143,31 @@ export async function claimLegacyDeliveries({
   now,
   workerId,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
+  deliveryIds,
 }: {
   db?: Db
   limit: number
   now: Date
   workerId: string
   leaseDurationMs?: number
+  deliveryIds?: readonly string[]
 }): Promise<ClaimedDelivery[]> {
+  if (deliveryIds?.length === 0) return []
+  if (deliveryIds && deliveryIds.length > 100) throw new Error('Delivery claim scope is too large')
+  const uniqueDeliveryIds = deliveryIds ? [...new Set(deliveryIds)] : undefined
   const leaseUntil = new Date(now.getTime() + leaseDurationMs)
+  const deliveryScope = uniqueDeliveryIds
+    ? sql`and outbox_candidate.id in (${sql.join(uniqueDeliveryIds.map((id) => sql`${id}`), sql`, `)})`
+    : sql``
   const result = await db.execute<ClaimedDelivery & Record<string, unknown>>(sql`
     with candidates as (
-      select id
-        from delivery_outbox
+      select outbox_candidate.id
+        from delivery_outbox outbox_candidate
        where (
            (status in ('PENDING', 'RETRYING') and next_attempt_at <= ${now})
            or (status = 'LEASED' and lease_expires_at <= ${now})
          )
+         ${deliveryScope}
        order by next_attempt_at, id
        limit ${limit}
        for update skip locked

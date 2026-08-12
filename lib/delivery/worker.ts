@@ -11,7 +11,7 @@ import {
 import type { ChannelConfig, DeliveryEvent } from '@/lib/delivery/types'
 import { getDb, type Db } from '@/lib/db'
 import { getPushoverConfig } from '@/lib/notifications/pushover'
-import { after } from 'next/server'
+import { after } from 'next/server.js'
 import { decryptChannelConfig, loadChannelKeyring, type ChannelKeyring } from '@/lib/routing/crypto'
 import { parseChannelConfig } from '@/lib/routing/channel-schemas'
 
@@ -42,6 +42,7 @@ export async function runDeliverySweep({
   concurrency = 20,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   leaseRenewalMs = Math.max(1, Math.floor(leaseDurationMs / 3)),
+  deliveryIds,
 }: {
   db?: Db
   limit?: number
@@ -54,12 +55,15 @@ export async function runDeliverySweep({
   concurrency?: number
   leaseDurationMs?: number
   leaseRenewalMs?: number
+  deliveryIds?: readonly string[]
 } = {}): Promise<DeliverySweepResult> {
   const activeConcurrency = Math.max(1, Math.floor(concurrency))
   const channelKeyring = keyring === undefined ? loadKeyringSafely() : keyring
   // Claim only work we can start now. Queued claimed rows would otherwise
   // consume their lease while waiting behind a slow provider.
-  const claimed = await claimLegacyDeliveries({ db, limit: Math.min(limit, activeConcurrency), now, workerId, leaseDurationMs })
+  const claimed = await claimLegacyDeliveries({
+    db, limit: Math.min(limit, activeConcurrency), now, workerId, leaseDurationMs, deliveryIds,
+  })
   const result: DeliverySweepResult = {
     claimed: claimed.length,
     started: 0,
