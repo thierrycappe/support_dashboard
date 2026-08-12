@@ -29,6 +29,7 @@ let currentJwk: Record<string, unknown>
 let nextJwk: Record<string, unknown>
 let otherJwk: Record<string, unknown>
 let accessToken: string
+const MAX_RETAINED_EXPIRED_ROTATIONS = 20
 
 beforeAll(async () => {
   currentKeys = await generateKeyPair('EdDSA', { extractable: true })
@@ -129,6 +130,93 @@ describe('overlapping credential rotation', () => {
     expect(await count(sql`select count(*)::int as count from app_credentials where status = 'PENDING'`)).toBe(1)
   })
 
+  it('expires stale pending rotations and bounds retained history per app', async () => {
+    let attemptNow = now
+    for (let attempt = 0; attempt < MAX_RETAINED_EXPIRED_ROTATIONS + 5; attempt += 1) {
+      const keys = await generateKeyPair('EdDSA', { extractable: true })
+      const publicJwk = await exportJWK(keys.publicKey) as Record<string, unknown>
+      await beginCredentialRotation({
+        db: getDb(), principal: principal(), nextPublicJwk: publicJwk,
+        proof: await rotationProof(publicJwk, `expiry-${attempt}`, { issuedAt: attemptNow }),
+        correlationId: randomUUID(), now: attemptNow,
+      })
+      attemptNow = new Date(attemptNow.getTime() + 5 * 60_000 + 1)
+    }
+    expect(await count(sql`
+      select count(*)::int as count from app_credentials
+       where source_app_id = ${appId} and status = 'PENDING'
+    `)).toBe(1)
+    expect(await count(sql`
+      select count(*)::int as count from app_credentials
+       where source_app_id = ${appId} and status = 'EXPIRED'
+    `)).toBe(MAX_RETAINED_EXPIRED_ROTATIONS)
+    expect(await count(sql`
+      select count(*)::int as count from app_credentials
+       where source_app_id = ${appId} and status in ('PENDING', 'EXPIRED')
+    `)).toBe(MAX_RETAINED_EXPIRED_ROTATIONS + 1)
+  })
+
+  it('maps only the thumbprint unique race to a deterministic duplicate conflict with no partial writes', async () => {
+    const secondAppId = 'rotation-app-second'
+    const secondCredentialId = 'rotation-current-second'
+    const secondCurrent = await generateKeyPair('EdDSA', { extractable: true })
+    const secondCurrentJwk = await exportJWK(secondCurrent.publicKey) as Record<string, unknown>
+    const firstCorrelation = randomUUID()
+    const secondCorrelation = randomUUID()
+    await getDb().execute(sql`
+      insert into source_apps (id, slug, name, environment, status, enrollment_status, credential_mode, created_at, updated_at)
+      values (${secondAppId}, ${secondAppId}, 'Second rotation app', 'test', 'ACTIVE', 'ACTIVE', 'PUBLIC_KEY', ${now}, ${now})
+    `)
+    await getDb().execute(sql`
+      insert into app_credentials (id, source_app_id, public_jwk, public_key_thumbprint, status, valid_from, created_at)
+      values (${secondCredentialId}, ${secondAppId}, ${JSON.stringify(secondCurrentJwk)}::jsonb,
+              ${publicJwkThumbprint(secondCurrentJwk)}, 'ACTIVE', ${now}, ${now})
+    `)
+
+    let duplicateChecks = 0
+    const bothChecked = deferred<void>()
+    const release = deferred<void>()
+    const afterDuplicateChecked = async () => {
+      duplicateChecks += 1
+      if (duplicateChecks === 2) bothChecked.resolve()
+      await release.promise
+    }
+    const first = beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: nextJwk,
+      proof: await rotationProof(nextJwk, 'cross-app-first'), correlationId: firstCorrelation, now,
+      afterDuplicateChecked,
+    })
+    const secondProof = await new SignJWT({
+      appId: secondAppId, currentCredentialId: secondCredentialId,
+      nextJwkThumbprint: publicJwkThumbprint(nextJwk), nonce: 'cross-app-second',
+    }).setProtectedHeader({ alg: 'EdDSA', kid: secondCredentialId })
+      .setAudience('/api/v1/credentials/rotate').setIssuedAt(Math.floor(now.getTime() / 1_000))
+      .setExpirationTime(Math.floor(now.getTime() / 1_000) + 60).sign(secondCurrent.privateKey)
+    const second = beginCredentialRotation({
+      db: getDb(), principal: { appId: secondAppId, credentialId: secondCredentialId, scopes: ['credentials:rotate'] },
+      nextPublicJwk: nextJwk, proof: secondProof, correlationId: secondCorrelation, now,
+      afterDuplicateChecked,
+    })
+    const settlement = Promise.allSettled([first, second])
+    await bothChecked.promise
+    release.resolve()
+    const settled = await settlement
+    expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    const rejected = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    expect(rejected?.reason).toMatchObject({ code: 'DUPLICATE_CREDENTIAL' })
+    expect(await count(sql`select count(*)::int as count from app_credentials where status = 'PENDING'`)).toBe(1)
+    expect(await count(sql`select count(*)::int as count from service_assertion_replays where assertion_jti like 'rotation-proof:%'`)).toBe(1)
+    expect(await count(sql`select count(*)::int as count from audit_events where request_correlation_id in (${firstCorrelation}, ${secondCorrelation})`)).toBe(1)
+
+    const otherUnique = Object.assign(new Error('unrelated unique constraint'), { code: '23505', constraint: 'audit_events_pkey' })
+    await resetPending()
+    await expect(beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: otherJwk,
+      proof: await rotationProof(otherJwk, 'unrelated-unique'), correlationId: randomUUID(), now,
+      afterPendingCreated: async () => { throw otherUnique },
+    })).rejects.toBe(otherUnique)
+  })
+
   it('rejects wrong, expired, and reused challenge proofs', async () => {
     const begun = await beginCredentialRotation({ db: getDb(), principal: principal(), nextPublicJwk: nextJwk, proof: await rotationProof(nextJwk, 'confirm-errors'), correlationId: randomUUID(), now })
     await expect(confirmCredentialRotation({
@@ -194,6 +282,23 @@ describe('overlapping credential rotation', () => {
     await expect(revokeCredential({ db: getDb(), appId, credentialId: last, actorId: appId, correlationId: randomUUID(), now })).resolves.toBe(true)
     await expect(getActiveCredential({ db: getDb(), credentialId: last, now })).resolves.toBeNull()
   })
+
+  it.each([
+    ['active app and active enrollment', 'ACTIVE', 'ACTIVE', false],
+    ['active app and pending enrollment', 'ACTIVE', 'PENDING', false],
+    ['paused app', 'PAUSED', 'ACTIVE', true],
+    ['paused enrollment', 'ACTIVE', 'PAUSED', true],
+    ['revoked enrollment', 'ACTIVE', 'REVOKED', true],
+  ] as const)('applies the last-key rule for %s', async (_name, appStatus, enrollmentStatus, permitted) => {
+    await getDb().execute(sql`
+      update source_apps set status = ${appStatus}, enrollment_status = ${enrollmentStatus} where id = ${appId}
+    `)
+    const operation = revokeCredential({
+      db: getDb(), appId, credentialId: currentCredentialId, actorId: appId, correlationId: randomUUID(), now,
+    })
+    if (permitted) await expect(operation).resolves.toBe(true)
+    else await expect(operation).rejects.toMatchObject({ code: 'LAST_ACTIVE_CREDENTIAL' })
+  })
 })
 
 function principal() { return { appId, credentialId: currentCredentialId, scopes: ['credentials:rotate' as const] } }
@@ -243,4 +348,14 @@ async function resetPending(): Promise<void> {
 async function activeCredentialId(): Promise<string> {
   const result = await getDb().execute<{ id: string }>(sql`select id from app_credentials where source_app_id = ${appId} and status = 'ACTIVE' limit 1`)
   return result.rows[0]!.id
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }

@@ -12,6 +12,7 @@ const MAX_ROTATION_PROOF_SECONDS = 60
 const MAX_OVERLAP_SECONDS = 7 * 24 * 60 * 60
 const PROOF_REPLAY_PREFIX = 'rotation-proof:'
 const CHALLENGE_REPLAY_PREFIX = 'rotation-challenge:'
+const MAX_RETAINED_EXPIRED_ROTATIONS = 20
 
 export type RotationErrorCode =
   | 'INVALID_PROOF'
@@ -83,7 +84,7 @@ export async function getActiveCredential({
 
 export async function beginCredentialRotation({
   db = getDb(), principal, nextPublicJwk, proof, correlationId, now = new Date(),
-  afterPendingCreated, afterAuditAppended,
+  afterPendingCreated, afterAuditAppended, afterDuplicateChecked,
 }: {
   db?: Db
   principal: ServicePrincipal
@@ -93,6 +94,7 @@ export async function beginCredentialRotation({
   now?: Date
   afterPendingCreated?: () => Promise<void>
   afterAuditAppended?: () => Promise<void>
+  afterDuplicateChecked?: () => Promise<void>
 }): Promise<RotationChallenge> {
   if (!principal.scopes.includes('credentials:rotate')) throw new RotationError('INVALID_PROOF')
   const nextJwk = safePublicJwk(nextPublicJwk, 'INVALID_PROOF')
@@ -101,66 +103,74 @@ export async function beginCredentialRotation({
   const challenge = randomBytes(32).toString('base64url')
   const expiresAt = new Date(now.getTime() + ROTATION_CHALLENGE_TTL_MS)
 
-  return db.transaction(async (tx) => {
-    const app = (await tx.execute<AppRow & Record<string, unknown>>(sql`
-      select id, status, enrollment_status as "enrollmentStatus", credential_mode as "credentialMode"
-        from source_apps where id = ${principal.appId} for update
-    `)).rows[0]
-    const current = (await tx.execute<CredentialRow & Record<string, unknown>>(sql`
-      select id, source_app_id as "sourceAppId", public_jwk as "publicJwk", status,
-             valid_from as "validFrom", valid_until as "validUntil", revoked_at as "revokedAt"
-        from app_credentials where id = ${principal.credentialId} for update
-    `)).rows[0]
-    if (!isUsableApp(app) || !isActiveCredential(current, principal.appId, now)) throw new RotationError('INVALID_PROOF')
+  try {
+    return await db.transaction(async (tx) => {
+      const app = (await tx.execute<AppRow & Record<string, unknown>>(sql`
+        select id, status, enrollment_status as "enrollmentStatus", credential_mode as "credentialMode"
+          from source_apps where id = ${principal.appId} for update
+      `)).rows[0]
+      const current = (await tx.execute<CredentialRow & Record<string, unknown>>(sql`
+        select id, source_app_id as "sourceAppId", public_jwk as "publicJwk", status,
+               valid_from as "validFrom", valid_until as "validUntil", revoked_at as "revokedAt"
+          from app_credentials where id = ${principal.credentialId} for update
+      `)).rows[0]
+      if (!isUsableApp(app) || !isActiveCredential(current, principal.appId, now)) throw new RotationError('INVALID_PROOF')
 
-    const proofClaims = await verifyRotationProof({
-      proof, current, principal, expectedThumbprint: nextThumbprint, now,
+      const proofClaims = await verifyRotationProof({
+        proof, current, principal, expectedThumbprint: nextThumbprint, now,
+      })
+
+      await expireAndPruneRotations(tx, principal.appId, now)
+
+      const duplicate = await tx.execute(sql`
+        select 1 from app_credentials where public_key_thumbprint = ${nextThumbprint} limit 1
+      `)
+      if (duplicate.rows[0]) throw new RotationError('DUPLICATE_CREDENTIAL')
+      await afterDuplicateChecked?.()
+
+      const existing = await tx.execute(sql`
+        select 1
+          from app_credentials pending
+          join service_assertion_replays replay on replay.credential_id = pending.id
+         where pending.rotation_parent_id = ${current.id}
+           and pending.status = 'PENDING'
+           and replay.assertion_jti like ${`${CHALLENGE_REPLAY_PREFIX}%`}
+           and replay.expires_at > ${now}
+         limit 1
+      `)
+      if (existing.rows[0]) throw new RotationError('ROTATION_IN_PROGRESS')
+
+      const proofReplay = await tx.execute(sql`
+        insert into service_assertion_replays (id, credential_id, assertion_jti, expires_at, created_at)
+        values (${randomUUID()}, ${current.id}, ${`${PROOF_REPLAY_PREFIX}${digest(proofClaims.nonce)}`}, ${new Date(proofClaims.exp * 1000)}, ${now})
+        on conflict (credential_id, assertion_jti) do nothing
+        returning id
+      `)
+      if (!proofReplay.rows[0]) throw new RotationError('INVALID_PROOF')
+
+      await tx.execute(sql`
+        insert into app_credentials
+          (id, source_app_id, public_jwk, public_key_thumbprint, status, valid_from, rotation_parent_id, created_at)
+        values
+          (${credentialId}, ${principal.appId}, ${JSON.stringify(nextJwk)}::jsonb, ${nextThumbprint}, 'PENDING', ${now}, ${current.id}, ${now})
+      `)
+      await afterPendingCreated?.()
+      await tx.execute(sql`
+        insert into service_assertion_replays (id, credential_id, assertion_jti, expires_at, created_at)
+        values (${randomUUID()}, ${credentialId}, ${`${CHALLENGE_REPLAY_PREFIX}${digest(challenge)}`}, ${expiresAt}, ${now})
+      `)
+      await appendAuditEvent({
+        db: tx, actorId: principal.appId, correlationId, reason: 'Application credential rotation begun',
+        action: 'SERVICE_CREDENTIAL_ROTATION_BEGUN', subjectType: 'app_credential', subjectId: credentialId,
+        metadata: { parentCredentialId: current.id }, now,
+      })
+      await afterAuditAppended?.()
+      return { credentialId, challenge, expiresAt }
     })
-
-    const duplicate = await tx.execute(sql`
-      select 1 from app_credentials where public_key_thumbprint = ${nextThumbprint} limit 1
-    `)
-    if (duplicate.rows[0]) throw new RotationError('DUPLICATE_CREDENTIAL')
-
-    const existing = await tx.execute(sql`
-      select 1
-        from app_credentials pending
-        join service_assertion_replays replay on replay.credential_id = pending.id
-       where pending.rotation_parent_id = ${current.id}
-         and pending.status = 'PENDING'
-         and replay.assertion_jti like ${`${CHALLENGE_REPLAY_PREFIX}%`}
-         and replay.expires_at > ${now}
-       limit 1
-    `)
-    if (existing.rows[0]) throw new RotationError('ROTATION_IN_PROGRESS')
-
-    const proofReplay = await tx.execute(sql`
-      insert into service_assertion_replays (id, credential_id, assertion_jti, expires_at, created_at)
-      values (${randomUUID()}, ${current.id}, ${`${PROOF_REPLAY_PREFIX}${digest(proofClaims.nonce)}`}, ${new Date(proofClaims.exp * 1000)}, ${now})
-      on conflict (credential_id, assertion_jti) do nothing
-      returning id
-    `)
-    if (!proofReplay.rows[0]) throw new RotationError('INVALID_PROOF')
-
-    await tx.execute(sql`
-      insert into app_credentials
-        (id, source_app_id, public_jwk, public_key_thumbprint, status, valid_from, rotation_parent_id, created_at)
-      values
-        (${credentialId}, ${principal.appId}, ${JSON.stringify(nextJwk)}::jsonb, ${nextThumbprint}, 'PENDING', ${now}, ${current.id}, ${now})
-    `)
-    await afterPendingCreated?.()
-    await tx.execute(sql`
-      insert into service_assertion_replays (id, credential_id, assertion_jti, expires_at, created_at)
-      values (${randomUUID()}, ${credentialId}, ${`${CHALLENGE_REPLAY_PREFIX}${digest(challenge)}`}, ${expiresAt}, ${now})
-    `)
-    await appendAuditEvent({
-      db: tx, actorId: principal.appId, correlationId, reason: 'Application credential rotation begun',
-      action: 'SERVICE_CREDENTIAL_ROTATION_BEGUN', subjectType: 'app_credential', subjectId: credentialId,
-      metadata: { parentCredentialId: current.id }, now,
-    })
-    await afterAuditAppended?.()
-    return { credentialId, challenge, expiresAt }
-  })
+  } catch (error) {
+    if (isThumbprintUniqueViolation(error)) throw new RotationError('DUPLICATE_CREDENTIAL')
+    throw error
+  }
 }
 
 export async function confirmCredentialRotation({
@@ -271,6 +281,8 @@ export async function revokeCredential({
     const targetIsActive = isWithinValidity(target, now)
     const activeCount = credentials.rows.filter((credential) => isWithinValidity(credential, now)).length
     const appCanHaveNoActiveCredential = app.status === 'PAUSED'
+      || app.enrollmentStatus === 'PAUSED'
+      || app.enrollmentStatus === 'REVOKED'
     if (targetIsActive && activeCount <= 1 && !appCanHaveNoActiveCredential) throw new RotationError('LAST_ACTIVE_CREDENTIAL')
     await tx.execute(sql`
       update app_credentials set status = 'REVOKED', revoked_at = ${now}, valid_until = ${now}
@@ -369,6 +381,50 @@ function safePublicJwk(value: unknown, code: 'INVALID_PROOF' | 'INVALID_CHALLENG
 
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex')
+}
+
+async function expireAndPruneRotations(
+  tx: Parameters<Parameters<Db['transaction']>[0]>[0],
+  appId: string,
+  now: Date,
+): Promise<void> {
+  await tx.execute(sql`
+    update app_credentials pending
+       set status = 'EXPIRED', valid_until = expired.expires_at
+      from (
+        select replay.credential_id, max(replay.expires_at) as expires_at
+          from service_assertion_replays replay
+         where replay.assertion_jti like ${`${CHALLENGE_REPLAY_PREFIX}%`}
+           and replay.expires_at <= ${now}
+         group by replay.credential_id
+      ) expired
+     where pending.id = expired.credential_id
+       and pending.source_app_id = ${appId}
+       and pending.status = 'PENDING'
+  `)
+  await tx.execute(sql`
+    with ranked as (
+      select id, row_number() over (order by created_at desc, id desc) as position
+        from app_credentials
+       where source_app_id = ${appId}
+         and status = 'EXPIRED'
+         and rotation_parent_id is not null
+    )
+    delete from app_credentials credential
+     using ranked
+     where credential.id = ranked.id
+       and ranked.position > ${MAX_RETAINED_EXPIRED_ROTATIONS}
+  `)
+}
+
+function isThumbprintUniqueViolation(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 5 && current && typeof current === 'object'; depth += 1) {
+    const postgres = current as { code?: unknown; constraint?: unknown; cause?: unknown }
+    if (postgres.code === '23505' && postgres.constraint === 'app_credentials_thumbprint_idx') return true
+    current = postgres.cause
+  }
+  return false
 }
 
 function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> | null {

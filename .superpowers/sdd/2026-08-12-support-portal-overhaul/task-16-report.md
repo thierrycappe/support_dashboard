@@ -86,3 +86,60 @@ The build emitted the repository's existing multiple-lockfile workspace-root war
 
 - No blocking concerns. Expired pending credential rows are retained for auditability; their challenge marker becomes unusable at the exact expiry and bounded replay maintenance can remove the expired marker. A previously used public-key thumbprint remains globally non-reusable by the schema's existing uniqueness contract.
 - Mandatory Sol security review remains the parent review gate after this implementation commit.
+
+## Fix Round 1 — Sol P2 Findings
+
+### Implementation
+
+- Corrected last-usable-key revocation to permit the exact authoritative terminal/paused states present in the schema: app `PAUSED`, enrollment `PAUSED`, or enrollment `REVOKED`. Active apps with `ACTIVE` or `PENDING` enrollment remain protected.
+- Beginning a rotation now marks every challenge-expired `PENDING` credential for that app as `EXPIRED` under the existing app/current-credential locks. It retains the newest 20 expired rotation records per app for auditability and deletes older expired rotation credentials; replay children cascade. The same transaction still enforces at most one unexpired pending rotation.
+- Added precise PostgreSQL `23505` translation for `app_credentials_thumbprint_idx` only. A real synchronized cross-app race now deterministically returns one success and one `DUPLICATE_CREDENTIAL`, with the losing transaction rolling back its nonce marker and audit. Other unique violations propagate unchanged.
+
+### RED evidence
+
+Command:
+
+```bash
+TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55442/support_task6_test?support_test=1' \
+  npx vitest run --config vitest.integration.config.ts tests/integration/credential-rotation.test.ts --reporter=verbose
+```
+
+Observed expected failures before implementation:
+
+- repeated expired rotations left 25 `PENDING` credentials instead of one;
+- enrollment `PAUSED` and `REVOKED` last-key revocations returned `LAST_ACTIVE_CREDENTIAL`;
+- the synchronized cross-app thumbprint race exposed raw `23505 app_credentials_thumbprint_idx` and timed out before deterministic settlement.
+
+### GREEN evidence
+
+Focused live suite:
+
+```text
+Test Files  1 passed (1)
+Tests       20 passed (20)
+```
+
+The retained tests prove 25 sequential expiries leave exactly one live `PENDING` plus 20 retained `EXPIRED` rows; every allowed/denied app/enrollment state; one winner/one typed loser across apps; exactly one pending row, proof marker, and audit; and no translation of an unrelated injected `23505`.
+
+Full gates:
+
+| Command | Result |
+| --- | --- |
+| `npm run test:run` | Passed: 30 files, 202 tests |
+| `TEST_DATABASE_URL=... npm run test:integration` | Passed: 14 files, 141 tests |
+| `npm run typecheck` | Passed |
+| `npm run lint` | Passed |
+| `npm run scenario:check` | Passed: 4 scenarios |
+| `npm run build` | Passed |
+| `git diff --check` | Passed |
+
+### Self-review
+
+- The retention mutation and new credential creation share one transaction and the same per-app lock; no scheduled global sweep or new migration is required.
+- Retention deletes only `EXPIRED` rows with a non-null rotation parent and never active, pending, enrollment-created, or revoked credentials.
+- Constraint mapping walks wrapped database errors but compares both exact SQLSTATE and exact named constraint.
+- No challenge, nonce, private material, or database error detail is newly persisted or exposed.
+
+### Concerns
+
+- Cleanup is intentionally opportunistic per app at begin time: it bounds every app that continues rotating without adding global scheduled-maintenance scope. Dormant apps may retain their already finite historical rows until their next rotation.
