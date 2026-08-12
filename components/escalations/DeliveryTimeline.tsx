@@ -19,7 +19,7 @@ export default function DeliveryTimeline({ attempts }: { attempts: DeliveryTimel
               <time dateTime={attempt.startedAt.toISOString()}>{timestamp.format(attempt.startedAt)} UTC</time>
               <div>
                 <strong>Attempt {attempt.ordinal} · {resultLabel(attempt.resultClass)}</strong>
-                <span>{attempt.target}{attempt.providerStatus ? ` · Provider ${attempt.providerStatus}` : ''}</span>
+                <span>Generation {attempt.eventGeneration} · {attempt.target}{attempt.providerStatus ? ` · Provider ${attempt.providerStatus}` : ''}</span>
                 {attempt.sanitizedError ? <p>{attempt.sanitizedError}</p> : null}
               </div>
             </li>

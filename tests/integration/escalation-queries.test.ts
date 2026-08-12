@@ -95,6 +95,44 @@ describe('escalation queue query', () => {
       { ordinal: 2, resultClass: 'sent' },
     ])
   })
+
+  it('does not resolve unapproved feedback through the direct escalation detail query', async () => {
+    await seedTicket({ id: 'direct-unapproved', appId: 'app-a', title: 'Unapproved direct access', priority: 'HIGH', status: 'NEW', createdAt: now, triage: null })
+
+    await expect(getEscalationDetail('direct-unapproved', getDb(), now)).resolves.toBeNull()
+  })
+
+  it('projects only the latest event delivery state per target while retaining chronological attempt generations and routing incidents', async () => {
+    await seedTicket({ id: 'current-delivery', appId: 'app-a', title: 'Current delivery state', priority: 'HIGH', status: 'NEW', createdAt: new Date('2026-08-09T08:00:00.000Z') })
+    await seedChannel('channel-alpha')
+    await seedChannel('channel-bravo')
+    await seedDelivery('current-delivery', 'SENT', 1, 'channel:channel-alpha', 'channel-alpha', 1)
+    await seedDelivery('current-delivery', 'RETRYING', 2, 'channel:channel-alpha', 'channel-alpha', 1)
+    await seedDelivery('current-delivery', 'PENDING', 2, 'channel:channel-alpha', 'channel-alpha', 2)
+    await seedDelivery('current-delivery', 'SENT', 2, 'channel:channel-bravo', 'channel-bravo', 1)
+    await seedDeliveryAttemptForOutbox('current-delivery', 1, 'channel:channel-alpha', 1, new Date('2026-08-12T09:00:00.000Z'), 'sent', null)
+    await seedDeliveryAttemptForOutbox('current-delivery', 2, 'channel:channel-alpha', 2, new Date('2026-08-12T09:05:00.000Z'), 'retryable', 'The provider asked us to retry.')
+    await getDb().execute(sql`
+      insert into routing_incidents (id, escalation_event_id, reason, created_at)
+      values ('incident-current-delivery', 'event-current-delivery-2', 'No active central fallback is available.', ${now})
+    `)
+
+    const detail = await getEscalationDetail('current-delivery', getDb(), now)
+
+    expect(detail).toMatchObject({
+      delivery: {
+        targets: [
+          { target: 'channel-alpha', status: 'PENDING' },
+          { target: 'channel-bravo', status: 'SENT' },
+        ],
+        routingIncident: 'No active central fallback is available.',
+      },
+    })
+    expect(detail?.deliveryAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventGeneration: 1 }),
+      expect.objectContaining({ eventGeneration: 2 }),
+    ]))
+  })
 })
 
 async function seedApp(id: string, name: string): Promise<void> {
@@ -150,6 +188,16 @@ async function seedDeliveryAttempt(ticketId: string, ordinal: number, startedAt:
     insert into delivery_attempts
       (id, outbox_id, ordinal, target_key, started_at, finished_at, result_class, sanitized_error, created_at)
     values (${`attempt-${ticketId}-${ordinal}`}, ${`outbox-${ticketId}-1-legacy:central-pushover-1`}, ${ordinal}, 'legacy:central-pushover',
+      ${startedAt}, ${startedAt}, ${resultClass}, ${sanitizedError}, ${startedAt})
+  `)
+}
+
+async function seedDeliveryAttemptForOutbox(ticketId: string, generation: number, targetKey: string, ordinal: number, startedAt: Date, resultClass: string, sanitizedError: string | null): Promise<void> {
+  const outboxId = `outbox-${ticketId}-${generation}-${targetKey}-${generation === 2 && targetKey === 'channel:channel-alpha' ? ordinal : 1}`
+  await getDb().execute(sql`
+    insert into delivery_attempts
+      (id, outbox_id, ordinal, target_key, started_at, finished_at, result_class, sanitized_error, created_at)
+    values (${`attempt-${ticketId}-${generation}-${targetKey}-${ordinal}`}, ${outboxId}, ${ordinal}, ${targetKey},
       ${startedAt}, ${startedAt}, ${resultClass}, ${sanitizedError}, ${startedAt})
   `)
 }

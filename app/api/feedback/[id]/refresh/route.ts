@@ -10,6 +10,7 @@ import {
 import { acceptLegacyPayload, legacyResult } from '@/lib/escalations/legacy'
 
 export const dynamic = 'force-dynamic'
+const REFRESH_FAILURE_MESSAGE = 'Source refresh could not be completed. Try again later.'
 
 export async function POST(
   _request: Request,
@@ -21,10 +22,7 @@ export async function POST(
   }
 
   if (!hasDatabaseUrl()) {
-    return NextResponse.json(
-      { error: 'DATABASE_URL is not configured' },
-      { status: 503 },
-    )
+    return NextResponse.json({ error: REFRESH_FAILURE_MESSAGE }, { status: 503 })
   }
 
   const { id } = await params
@@ -41,50 +39,23 @@ export async function POST(
 
   const row = rows[0]
   if (!row) {
-    return NextResponse.json({ error: 'Ticket not found' }, { status: 404 })
+    return NextResponse.json({ error: REFRESH_FAILURE_MESSAGE }, { status: 404 })
   }
 
-  const config = getSourceAppPullConfig(row.appSlug)
-  if (!config) {
-    return NextResponse.json(
-      { error: `No pull endpoint configured for app "${row.appSlug}"` },
-      { status: 503 },
-    )
-  }
-
-  let tickets
   try {
-    tickets = await fetchTicketsFromSource({
+    const config = getSourceAppPullConfig(row.appSlug)
+    if (!config) return NextResponse.json({ error: REFRESH_FAILURE_MESSAGE }, { status: 503 })
+    const tickets = await fetchTicketsFromSource({
       config,
       externalId: row.externalId,
     })
+    const payload = tickets[0]
+    if (!payload || payload.app.slug !== row.appSlug) return NextResponse.json({ error: REFRESH_FAILURE_MESSAGE }, { status: 502 })
+    const accepted = await acceptLegacyPayload({ payload, authoritativeAppSlug: row.appSlug })
+    const result = legacyResult(accepted)
+    return NextResponse.json({ ok: true, changed: accepted.result !== 'duplicate', ticketId: result.ticketId })
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return NextResponse.json(
-      { error: `Source pull failed: ${message}` },
-      { status: 502 },
-    )
+    console.warn('Source refresh failed', { ticketId: id, appSlug: row.appSlug, errorType: error instanceof Error ? error.name : typeof error })
+    return NextResponse.json({ error: REFRESH_FAILURE_MESSAGE }, { status: 502 })
   }
-
-  const payload = tickets[0]
-  if (!payload) {
-    return NextResponse.json(
-      { error: 'Source app returned no ticket for that externalId' },
-      { status: 404 },
-    )
-  }
-
-  if (payload.app.slug !== row.appSlug) {
-    return NextResponse.json({ error: 'Source app identity mismatch' }, { status: 409 })
-  }
-  const result = legacyResult(await acceptLegacyPayload({
-    payload,
-    authoritativeAppSlug: row.appSlug,
-  }))
-  return NextResponse.json({
-    ok: true,
-    refreshed: true,
-    ticketId: result.ticketId,
-    status: payload.ticket.status,
-  })
 }

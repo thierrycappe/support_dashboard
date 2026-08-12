@@ -11,6 +11,7 @@ export default function EscalationDetailContent({ detail }: { detail: Escalation
   const approval = detail.approval
     ? detail.approval.ownerName ? `Approved by ${detail.approval.ownerName}` : 'Approved in application'
     : 'Business approval not recorded'
+  const connection = connectionLabel(detail.application.enrollmentStatus, detail.application.credentialMode, detail.application.activeCredential)
 
   return (
     <>
@@ -45,15 +46,40 @@ export default function EscalationDetailContent({ detail }: { detail: Escalation
             <h2>Source application</h2>
             <dl className="detail-facts">
               <div><dt>Application</dt><dd>{detail.application.name}</dd></div>
-              <div><dt>Connection</dt><dd>{detail.application.enrollmentStatus === 'ENROLLED' ? 'Credential enrolled' : 'Credential enrollment pending'}</dd></div>
+              <div><dt>Connection</dt><dd>{connection}</dd></div>
               <div><dt>Last authenticated</dt><dd>{detail.application.lastAuthenticatedAt ? `${timestamp.format(detail.application.lastAuthenticatedAt)} UTC` : 'Not authenticated yet'}</dd></div>
               <div><dt>Reporter</dt><dd>{reporter}</dd></div>
             </dl>
             {detail.application.sourceUrl ? <a className="detail-source-link" href={detail.application.sourceUrl} target="_blank" rel="noopener noreferrer" aria-label={`Open source ticket for ${detail.ticket.title}`}>Open source ticket</a> : <p className="subtle">Source link unavailable.</p>}
             {detail.pullConfigured ? <div className="detail-refresh"><RefreshFromSourceButton ticketId={detail.ticket.id} /></div> : null}
           </section>
+          <section className="detail-section">
+            <h2>Current delivery</h2>
+            {detail.delivery.eventGeneration !== null ? <p className="subtle">Event generation {detail.delivery.eventGeneration}</p> : <p className="subtle">No delivery event has been queued.</p>}
+            {detail.delivery.targets.length ? <ul className="detail-delivery-targets">{detail.delivery.targets.map((target) => <li key={target.target}><span>{target.target}</span><Badge tone={deliveryTone(target.status)}>{deliveryLabel(target.status)}</Badge></li>)}</ul> : null}
+            {detail.delivery.routingIncident ? <p className="detail-delivery-incident">{detail.delivery.routingIncident}</p> : null}
+          </section>
         </aside>
       </section>
     </>
   )
+}
+
+function connectionLabel(enrollmentStatus: string, credentialMode: string, activeCredential: boolean): string {
+  if (enrollmentStatus === 'PENDING') return 'Enrollment pending'
+  if (enrollmentStatus === 'PAUSED') return 'Enrollment paused'
+  if (enrollmentStatus === 'REVOKED') return 'Enrollment revoked'
+  if (credentialMode === 'LEGACY_BEARER') return 'Enrollment active, legacy credential mode'
+  return activeCredential ? 'Enrollment active, credential verified' : 'Enrollment active, no active credential'
+}
+
+function deliveryLabel(status: string): string {
+  return ({ PENDING: 'Pending', LEASED: 'Leased', RETRYING: 'Retrying', SENT: 'Sent', FAILED: 'Failed', CANCELLED: 'Cancelled' } as Record<string, string>)[status] ?? 'Pending'
+}
+
+function deliveryTone(status: string): 'neutral' | 'success' | 'warning' | 'danger' {
+  if (status === 'SENT') return 'success'
+  if (status === 'FAILED') return 'danger'
+  if (status === 'PENDING' || status === 'LEASED' || status === 'RETRYING') return 'warning'
+  return 'neutral'
 }

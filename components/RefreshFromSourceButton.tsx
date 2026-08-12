@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { RefreshCw } from 'lucide-react'
 
@@ -11,24 +11,32 @@ interface Props {
 export default function RefreshFromSourceButton({ ticketId }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [message, setMessage] = useState<{ tone: 'error' | 'success'; text: string } | null>(null)
+  const inFlight = useRef(false)
+  const busy = isRefreshing || isPending
 
   async function handleClick() {
-    setError(null)
+    if (inFlight.current) return
+    inFlight.current = true
+    setIsRefreshing(true)
+    setMessage(null)
     try {
       const response = await fetch(`/api/feedback/${ticketId}/refresh`, {
         method: 'POST',
       })
       if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as {
-          error?: string
-        } | null
-        setError(body?.error ?? `Refresh failed (${response.status})`)
+        setMessage({ tone: 'error', text: 'Source refresh could not be completed. Try again later.' })
         return
       }
+      const body = await response.json().catch(() => null) as { changed?: boolean } | null
+      setMessage({ tone: 'success', text: body?.changed === false ? 'Source data is already current.' : 'Source data refreshed.' })
       startTransition(() => router.refresh())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+    } catch {
+      setMessage({ tone: 'error', text: 'Source refresh could not be completed. Try again later.' })
+    } finally {
+      inFlight.current = false
+      setIsRefreshing(false)
     }
   }
 
@@ -38,14 +46,15 @@ export default function RefreshFromSourceButton({ ticketId }: Props) {
         type="button"
         className="button"
         onClick={handleClick}
-        disabled={isPending}
+        disabled={busy}
+        aria-busy={busy || undefined}
       >
         <RefreshCw size={14} />
-        {isPending ? 'Refreshing…' : 'Refresh from source'}
+        {busy ? 'Refreshing…' : 'Refresh from source'}
       </button>
-      {error && (
-        <span className="subtle" style={{ color: 'var(--danger)' }}>
-          {error}
+      {message && (
+        <span className="subtle" role={message.tone === 'error' ? 'alert' : 'status'}>
+          {message.text}
         </span>
       )}
     </div>
