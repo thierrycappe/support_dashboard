@@ -5,8 +5,9 @@ import { escalationV1Schema, MAX_ESCALATION_V1_BODY_BYTES } from '@/lib/escalati
 import { IntakeError } from '@/lib/escalations/errors'
 import { acceptEscalation, type IntakeResult } from '@/lib/escalations/intake'
 import { resolveTargetsFromDb } from '@/lib/escalations/repository'
+import { AccessTokenVerificationError } from '@/lib/service-auth/access-tokens'
 import type { ServicePrincipal } from '@/lib/service-auth/assertions'
-import { publicError, readJsonBody, requestCorrelationId, RequestBodyError, requireIdempotencyKey, requireServicePrincipal } from '@/lib/service-auth/guards'
+import { publicError, publicJson, readJsonBody, requestCorrelationId, RequestBodyError, requireIdempotencyKey, requireJsonContentType, requireServicePrincipal, UnsupportedMediaTypeError } from '@/lib/service-auth/guards'
 import { consumeRequiredLimits, serviceRateLimits, ServiceRateLimitError } from '@/lib/service-auth/rate-limit'
 
 type Accept = (input: Parameters<typeof acceptEscalation>[0]) => Promise<IntakeResult>
@@ -29,10 +30,19 @@ export async function handleEscalation(request: Request, deps: {
   maxBodyBytes?: number
 } = {}): Promise<Response> {
   const correlationId = requestCorrelationId(request)
+  try {
+    requireJsonContentType(request)
+  } catch (error) {
+    if (error instanceof UnsupportedMediaTypeError) return publicError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Content-Type must be application/json', correlationId)
+    throw error
+  }
   let principal: ServicePrincipal
   try {
     principal = await (deps.principal ?? ((value) => requireServicePrincipal(value, ['escalations:write'])))(request)
-  } catch {
+  } catch (error) {
+    if (error instanceof AccessTokenVerificationError && error.kind === 'unavailable') {
+      return publicError(503, 'SERVICE_UNAVAILABLE', 'Service temporarily unavailable', correlationId)
+    }
     return publicError(401, 'INVALID_ACCESS_TOKEN', 'Access token is invalid', correlationId)
   }
   try {
@@ -42,7 +52,7 @@ export async function handleEscalation(request: Request, deps: {
       appId: principal.appId, credentialId: principal.credentialId, idempotencyKey, command,
     })
     if (result.result !== 'duplicate') (deps.wakeup ?? scheduleDeliveryWakeup)()
-    return Response.json({ appId: result.appId, ticketId: result.ticketId, result: result.result }, { status: result.result === 'created' ? 201 : 200 })
+    return publicJson({ ticketId: result.ticketId, result: result.result, acceptedAt: result.acceptedAt.toISOString() }, { status: result.result === 'created' ? 201 : 200 })
   } catch (error) {
     if (error instanceof ServiceRateLimitError) return publicError(429, 'RATE_LIMITED', 'Too many requests', correlationId, { 'Retry-After': String(error.retryAfterSeconds) })
     if (error instanceof IntakeError) return publicError(409, 'IDEMPOTENCY_CONFLICT', 'Idempotency key conflicts with an accepted request', correlationId)

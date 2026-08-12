@@ -14,10 +14,22 @@ export class RequestBodyError extends Error {
   constructor(readonly kind: 'invalid' | 'too_large') { super(kind) }
 }
 
+export class UnsupportedMediaTypeError extends Error {}
 export class ServiceAuthorizationError extends Error {}
 
 export function publicError(status: number, code: string, message: string, correlationId: string, headers?: HeadersInit) {
-  return NextResponse.json({ error: { code, message, correlationId } }, { status, headers })
+  return NextResponse.json({ error: { code, message, correlationId } }, { status, headers: noStoreHeaders(headers) })
+}
+
+export function publicJson(body: unknown, init: ResponseInit = {}): Response {
+  return Response.json(body, { ...init, headers: noStoreHeaders(init.headers) })
+}
+
+export function requireJsonContentType(request: Request): void {
+  const contentType = request.headers.get('content-type')
+  if (!contentType || contentType.split(';', 1)[0]!.trim().toLowerCase() !== 'application/json') {
+    throw new UnsupportedMediaTypeError()
+  }
 }
 
 export function requestCorrelationId(request: Request): string {
@@ -71,18 +83,21 @@ export interface EnrollmentExchangeResult {
   kind: 'created' | 'invalid'
   appId?: string
   credentialId?: string
+  keyId?: string
 }
 
 export async function exchangeEnrollment({
-  db = getDb(), invitation, publicJwk, clientIp, correlationId, now = new Date(),
-  afterCredentialCreated, afterAuditAppended,
+  db = getDb(), grantId, invitation, publicJwk, clientIp, correlationId, now = new Date(),
+  afterAppLocked, afterCredentialCreated, afterAuditAppended,
 }: {
   db?: Db
+  grantId: string
   invitation: string
   publicJwk: unknown
-  clientIp: string | null
+  clientIp: string
   correlationId: string
   now?: Date
+  afterAppLocked?: () => Promise<void>
   afterCredentialCreated?: () => Promise<void>
   afterAuditAppended?: () => Promise<void>
 }): Promise<EnrollmentExchangeResult> {
@@ -90,16 +105,32 @@ export async function exchangeEnrollment({
   const digest = invitationDigest(invitation).toString('hex')
   const thumbprint = publicJwkThumbprint(jwk)
   return db.transaction(async (tx) => {
+    const owner = await tx.execute<{ sourceAppId: string } & Record<string, unknown>>(sql`
+      select source_app_id as "sourceAppId" from app_enrollment_grants where id = ${grantId}
+    `)
+    if (!owner.rows[0]) return { kind: 'invalid' }
+    const apps = await tx.execute<{
+      id: string; appStatus: string; enrollmentStatus: string; credentialMode: string
+    } & Record<string, unknown>>(sql`
+      select id, status as "appStatus", enrollment_status as "enrollmentStatus", credential_mode as "credentialMode"
+        from source_apps where id = ${owner.rows[0].sourceAppId} for update
+    `)
+    const app = apps.rows[0]
+    if (!app) return { kind: 'invalid' }
+    await afterAppLocked?.()
+    if (app.appStatus !== 'ACTIVE' || app.enrollmentStatus !== 'PENDING' || app.credentialMode !== 'LEGACY_BEARER') {
+      return { kind: 'invalid' }
+    }
     await consumeRequiredLimits(tx, [
       { scope: 'enrollment:invitation', subject: digest, ...serviceRateLimits.enrollmentInvitation, now },
-      { scope: 'enrollment:ip', subject: clientIp ?? 'unknown', ...serviceRateLimits.enrollmentIp, now },
+      { scope: 'enrollment:ip', subject: clientIp, ...serviceRateLimits.enrollmentIp, now },
     ])
     const grants = await tx.execute<{
       id: string; sourceAppId: string; tokenDigest: string; expiresAt: Date; consumedAt: Date | null; revokedAt: Date | null
     } & Record<string, unknown>>(sql`
       select id, source_app_id as "sourceAppId", token_digest as "tokenDigest", expires_at as "expiresAt",
              consumed_at as "consumedAt", revoked_at as "revokedAt"
-        from app_enrollment_grants where token_digest = ${digest} for update
+        from app_enrollment_grants where id = ${grantId} and source_app_id = ${app.id} for update
     `)
     const grant = grants.rows[0]
     if (!grant || !invitationDigestMatches(invitation, grant.tokenDigest) || grant.consumedAt || grant.revokedAt || grant.expiresAt <= now) {
@@ -122,7 +153,7 @@ export async function exchangeEnrollment({
       metadata: { credentialId }, now,
     })
     await afterAuditAppended?.()
-    return { kind: 'created', appId: grant.sourceAppId, credentialId }
+    return { kind: 'created', appId: grant.sourceAppId, credentialId, keyId: thumbprint }
   })
 }
 
@@ -133,3 +164,9 @@ export function invitationRateSubject(invitation: string): string {
 export { getTrustedClientIp }
 
 export type ServiceDbExecutor = Db | DbTransaction
+
+function noStoreHeaders(headers?: HeadersInit): Headers {
+  const result = new Headers(headers)
+  result.set('Cache-Control', 'no-store')
+  return result
+}

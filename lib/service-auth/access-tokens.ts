@@ -7,6 +7,13 @@ export const SERVICE_ACCESS_TOKEN_AUDIENCE = 'support-tower-service'
 const MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 5 * 60
 const allowedScopes = new Set<ServiceScope>(['escalations:write', 'credentials:rotate'])
 
+export class AccessTokenVerificationError extends Error {
+  constructor(readonly kind: 'invalid' | 'unavailable') {
+    super(kind === 'invalid' ? 'Invalid service access token' : 'Service access token verification unavailable')
+    this.name = 'AccessTokenVerificationError'
+  }
+}
+
 export async function issueServiceAccessToken({
   principal,
   now = new Date(),
@@ -36,7 +43,7 @@ export async function issueServiceAccessToken({
 export async function verifyServiceAccessToken({
   token,
   now = new Date(),
-  privateJwk = loadPrivateJwk(),
+  privateJwk,
   getCredential = getActiveCredential,
 }: {
   token: string
@@ -44,8 +51,14 @@ export async function verifyServiceAccessToken({
   privateJwk?: Record<string, unknown>
   getCredential?: typeof getActiveCredential
 }): Promise<ServicePrincipal> {
+  let key: Awaited<ReturnType<typeof importJWK>>
   try {
-    const key = await importJWK(publicJwkFromPrivate(privateJwk), 'EdDSA')
+    key = await importJWK(publicJwkFromPrivate(privateJwk ?? loadPrivateJwk()), 'EdDSA')
+  } catch {
+    throw new AccessTokenVerificationError('unavailable')
+  }
+  let principal: ServicePrincipal
+  try {
     const { payload } = await jwtVerify(token, key, {
       algorithms: ['EdDSA'], issuer: SERVICE_ACCESS_TOKEN_ISSUER, audience: SERVICE_ACCESS_TOKEN_AUDIENCE,
       currentDate: now, maxTokenAge: MAX_ACCESS_TOKEN_LIFETIME_SECONDS, clockTolerance: 5,
@@ -54,11 +67,17 @@ export async function verifyServiceAccessToken({
       || payload.sub !== payload.appId || typeof payload.iat !== 'number' || typeof payload.exp !== 'number'
       || payload.exp - payload.iat > MAX_ACCESS_TOKEN_LIFETIME_SECONDS) throw new Error('invalid claims')
     const scopes = parseScopes(payload.scope)
-    const credential = await getCredential({ credentialId: payload.credentialId, now })
-    if (!credential || credential.sourceAppId !== payload.appId) throw new Error('inactive credential')
-    return { appId: payload.appId, credentialId: payload.credentialId, scopes }
+    principal = { appId: payload.appId, credentialId: payload.credentialId, scopes }
   } catch {
-    throw new Error('Invalid service access token')
+    throw new AccessTokenVerificationError('invalid')
+  }
+  try {
+    const credential = await getCredential({ credentialId: principal.credentialId, now })
+    if (!credential || credential.sourceAppId !== principal.appId) throw new AccessTokenVerificationError('invalid')
+    return principal
+  } catch (error) {
+    if (error instanceof AccessTokenVerificationError) throw error
+    throw new AccessTokenVerificationError('unavailable')
   }
 }
 

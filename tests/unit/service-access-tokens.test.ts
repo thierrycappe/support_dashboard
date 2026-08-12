@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({ getActiveCredential: vi.fn() }))
 vi.mock('@/lib/service-auth/credentials', () => ({ getActiveCredential: mocks.getActiveCredential }))
 
 import {
+  AccessTokenVerificationError,
   SERVICE_ACCESS_TOKEN_AUDIENCE,
   SERVICE_ACCESS_TOKEN_ISSUER,
   issueServiceAccessToken,
@@ -53,6 +54,19 @@ describe('portal access tokens', () => {
     mocks.getActiveCredential.mockResolvedValue(null)
 
     await expect(verifyServiceAccessToken({ token, now })).rejects.toThrow('Invalid service access token')
+  })
+
+  it('preserves an active-credential database failure as typed unavailability', async () => {
+    const token = await issueServiceAccessToken({ principal, now })
+    mocks.getActiveCredential.mockRejectedValue(Object.assign(new Error('database unavailable'), { code: '08006' }))
+
+    await expect(verifyServiceAccessToken({ token, now })).rejects.toEqual(new AccessTokenVerificationError('unavailable'))
+  })
+
+  it('preserves signing-key configuration failure as typed unavailability', async () => {
+    const token = await issueServiceAccessToken({ principal, now })
+
+    await expect(verifyServiceAccessToken({ token, now, privateJwk: {} })).rejects.toEqual(new AccessTokenVerificationError('unavailable'))
   })
 
   it('rejects expiry beyond the five-minute maximum', async () => {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { sql } from 'drizzle-orm'
+import { Pool } from 'pg'
 import { closeDbPool, getDb } from '@/lib/db'
 import { POST as exchangeRoute } from '@/app/api/v1/enrollments/exchange/route'
 import { POST as tokenRoute } from '@/app/api/v1/service-tokens/route'
@@ -48,6 +49,13 @@ describe('versioned connector routes', () => {
       exchangeRoute(enrollmentRequest(invitation.secret)),
     ])
     expect(results.map((response) => response.status).sort()).toEqual([201, 401])
+    const createdResponse = results.find((response) => response.status === 201)!
+    await expect(createdResponse.json()).resolves.toMatchObject({
+      appId, issuer: 'https://support.example.test', audience: 'support-tower',
+      tokenEndpoint: 'https://support.example.test/api/v1/service-tokens',
+      ingestEndpoint: 'https://support.example.test/api/v1/escalations',
+    })
+    expect(createdResponse.headers.get('cache-control')).toBe('no-store')
     expect(await scalar(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId}`)).toBe(1)
     expect(await scalar(sql`select count(*)::int as count from app_enrollment_grants where id = ${invitation.id} and consumed_at is not null`)).toBe(1)
     expect(await scalar(sql`select count(*)::int as count from source_apps where id = ${appId} and enrollment_status = 'ACTIVE' and credential_mode = 'PUBLIC_KEY'`)).toBe(1)
@@ -56,9 +64,82 @@ describe('versioned connector routes', () => {
     expect((await exchangeRoute(enrollmentRequest(invitation.secret))).status).toBe(401)
   })
 
+  it.each([
+    ['paused app', 'app-paused'],
+    ['paused enrollment', 'enrollment-paused'],
+    ['revoked enrollment', 'enrollment-revoked'],
+    ['already public-key', 'public-key'],
+  ] as const)('rejects a stale invitation for %s without spending or mutation', async (_name, state) => {
+    await setAppState(state)
+
+    const response = await exchangeRoute(enrollmentRequest(invitation.secret))
+
+    expect(response.status).toBe(401)
+    expect(await scalar(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId}`)).toBe(0)
+    expect(await scalar(sql`select count(*)::int as count from app_enrollment_grants where id = ${invitation.id} and consumed_at is not null`)).toBe(0)
+    expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'SERVICE_APP_ENROLLED' and subject_id = ${appId}`)).toBe(0)
+    expect(await scalar(sql`select count(*)::int as count from service_rate_limit_buckets where subject in (${invitationRateSubject(invitation.secret)}, '203.0.113.8')`)).toBe(0)
+  })
+
+  it.each([
+    ['PAUSED', 'app-paused'],
+    ['REVOKED', 'enrollment-revoked'],
+  ] as const)('serializes a state-first %s transition before exchange', async (_state, state) => {
+    const blockerPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL })
+    const blocker = await blockerPool.connect()
+    let exchangeSettled = false
+    try {
+      await blocker.query('begin')
+      await blocker.query('select id from source_apps where id = $1 for update', [appId])
+      await blocker.query(state === 'app-paused'
+        ? "update source_apps set status = 'PAUSED' where id = $1"
+        : "update source_apps set enrollment_status = 'REVOKED' where id = $1", [appId])
+      const exchange = exchangeEnrollment({
+        db: getDb(), grantId: invitation.id, invitation: invitation.secret, publicJwk: appPublicJwk,
+        clientIp: '203.0.113.8', correlationId: randomUUID(), afterAppLocked: async () => undefined,
+      }).finally(() => { exchangeSettled = true })
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      expect(exchangeSettled).toBe(false)
+      await blocker.query('commit')
+      await expect(exchange).resolves.toEqual({ kind: 'invalid' })
+    } finally {
+      await blocker.query('rollback').catch(() => undefined)
+      blocker.release()
+      await blockerPool.end()
+    }
+  })
+
+  it.each([
+    ['PAUSED', 'app-paused'],
+    ['REVOKED', 'enrollment-revoked'],
+  ] as const)('serializes an exchange-first app lock before a later %s transition', async (_state, state) => {
+    let releaseLock!: () => void
+    let observeLock!: () => void
+    const locked = new Promise<void>((resolve) => { observeLock = resolve })
+    const release = new Promise<void>((resolve) => { releaseLock = resolve })
+    const exchange = exchangeEnrollment({
+      db: getDb(), grantId: invitation.id, invitation: invitation.secret, publicJwk: appPublicJwk,
+      clientIp: '203.0.113.8', correlationId: randomUUID(),
+      afterAppLocked: async () => { observeLock(); await release },
+    })
+    await locked
+    let pauseSettled = false
+    const pause = setAppState(state).finally(() => { pauseSettled = true })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(pauseSettled).toBe(false)
+    releaseLock()
+
+    await expect(exchange).resolves.toMatchObject({ kind: 'created', appId })
+    await pause
+    const expected = state === 'app-paused'
+      ? sql`select count(*)::int as count from source_apps where id = ${appId} and status = 'PAUSED' and enrollment_status = 'ACTIVE'`
+      : sql`select count(*)::int as count from source_apps where id = ${appId} and status = 'ACTIVE' and enrollment_status = 'REVOKED'`
+    expect(await scalar(expected)).toBe(1)
+  })
+
   it.each(['credential', 'audit'] as const)('rolls back every exchange mutation after injected %s-stage failure and leaves the grant usable', async (stage) => {
     await expect(exchangeEnrollment({
-      db: getDb(), invitation: invitation.secret, publicJwk: appPublicJwk, clientIp: '203.0.113.8', correlationId: randomUUID(),
+      db: getDb(), grantId: invitation.id, invitation: invitation.secret, publicJwk: appPublicJwk, clientIp: '203.0.113.8', correlationId: randomUUID(),
       afterCredentialCreated: stage === 'credential' ? async () => { throw new Error('injected') } : undefined,
       afterAuditAppended: stage === 'audit' ? async () => { throw new Error('injected') } : undefined,
     })).rejects.toThrow('injected')
@@ -68,7 +149,7 @@ describe('versioned connector routes', () => {
     expect(await scalar(sql`select count(*)::int as count from source_apps where id = ${appId} and enrollment_status = 'PENDING' and credential_mode = 'LEGACY_BEARER'`)).toBe(1)
     expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'SERVICE_APP_ENROLLED' and subject_id = ${appId}`)).toBe(0)
     expect(await scalar(sql`select count(*)::int as count from service_rate_limit_buckets where subject in (${invitationRateSubject(invitation.secret)}, '203.0.113.8')`)).toBe(0)
-    await expect(exchangeEnrollment({ db: getDb(), invitation: invitation.secret, publicJwk: appPublicJwk, clientIp: '203.0.113.8', correlationId: randomUUID() })).resolves.toMatchObject({ kind: 'created', appId })
+    await expect(exchangeEnrollment({ db: getDb(), grantId: invitation.id, invitation: invitation.secret, publicJwk: appPublicJwk, clientIp: '203.0.113.8', correlationId: randomUUID() })).resolves.toMatchObject({ kind: 'created', appId })
   })
 
   it('issues one five-minute token and rejects replay of the client assertion', async () => {
@@ -76,9 +157,10 @@ describe('versioned connector routes', () => {
     const assertion = await clientAssertion(credentialId, `assertion-${randomUUID()}`)
     const first = await tokenRoute(jsonRequest('/api/v1/service-tokens', { clientAssertion: assertion }))
     expect(first.status).toBe(200)
-    const body = await first.json() as { accessToken: string; expiresIn: number }
+    const body = await first.json() as { accessToken: string; expiresIn: number; scope: string }
     expect(body.accessToken.split('.')).toHaveLength(3)
     expect(body.expiresIn).toBe(300)
+    expect(body.scope).toBe('escalations:write')
     expect((await tokenRoute(jsonRequest('/api/v1/service-tokens', { clientAssertion: assertion }))).status).toBe(401)
   })
 
@@ -125,6 +207,7 @@ describe('versioned connector routes', () => {
     const conflict = await escalationRoute(jsonRequest('/api/v1/escalations', { ...escalationBody(), title: 'Changed' }, headers))
 
     expect(created.status).toBe(201)
+    await expect(created.json()).resolves.toMatchObject({ ticketId: expect.any(String), result: 'created', acceptedAt: expect.any(String) })
     expect(duplicate.status).toBe(200)
     expect(conflict.status).toBe(409)
     expect(await scalar(sql`select count(*)::int as count from feedback_tickets where source_app_id = ${appId}`)).toBe(1)
@@ -167,7 +250,10 @@ async function clientAssertion(credentialId: string, jti: string): Promise<strin
 }
 
 function enrollmentRequest(secret: string): Request {
-  return jsonRequest('/api/v1/enrollments/exchange', { invitation: secret, publicJwk: appPublicJwk }, { 'x-vercel-forwarded-for': '203.0.113.8' })
+  return jsonRequest('/api/v1/enrollments/exchange', {
+    grant: { id: invitation.id, secret }, publicKey: appPublicJwk,
+    connector: { version: '1.0.0', environment: 'test', baseUrl: 'https://source.example.test' },
+  }, { 'x-vercel-forwarded-for': '203.0.113.8' })
 }
 
 function jsonRequest(path: string, body: unknown, headers: Record<string, string> = {}): Request {
@@ -184,4 +270,11 @@ function escalationBody() {
 
 async function scalar(query: ReturnType<typeof sql>): Promise<number> {
   return (await getDb().execute<{ count: number }>(query)).rows[0]?.count ?? 0
+}
+
+async function setAppState(state: 'app-paused' | 'enrollment-paused' | 'enrollment-revoked' | 'public-key'): Promise<void> {
+  if (state === 'app-paused') await getDb().execute(sql`update source_apps set status = 'PAUSED' where id = ${appId}`)
+  else if (state === 'enrollment-paused') await getDb().execute(sql`update source_apps set enrollment_status = 'PAUSED' where id = ${appId}`)
+  else if (state === 'enrollment-revoked') await getDb().execute(sql`update source_apps set enrollment_status = 'REVOKED' where id = ${appId}`)
+  else await getDb().execute(sql`update source_apps set credential_mode = 'PUBLIC_KEY' where id = ${appId}`)
 }
