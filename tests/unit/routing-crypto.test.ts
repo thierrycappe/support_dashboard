@@ -5,7 +5,8 @@ import {
   parseChannelKeyring,
   type ChannelCryptoContext,
 } from '@/lib/routing/crypto'
-import { validateChannelConfig } from '@/lib/routing/channel-schemas'
+import { parseChannelConfig, validateChannelConfigForPersistence } from '@/lib/routing/channel-schemas'
+import { validateWebhookTarget } from '@/lib/delivery/webhook-target'
 
 const keyring = parseChannelKeyring(JSON.stringify({
   active: 'v1',
@@ -51,18 +52,50 @@ describe('channel configuration encryption', () => {
     }))).toThrow('Invalid channel encryption keyring')
   })
 
-  it('accepts structurally safe webhook configuration without a live DNS lookup', async () => {
-    await expect(validateChannelConfig('WEBHOOK', {
+  it.each(['v2147483648', 'v999999999999999999999999999999999999999999999999'])('rejects out-of-range key version %s', (version) => {
+    expect(() => parseChannelKeyring(JSON.stringify({
+      active: version,
+      keys: { [version]: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=' },
+    }))).toThrow('Invalid channel encryption keyring')
+  })
+
+  it('worker structural parsing accepts a public hostname without live DNS lookup', () => {
+    expect(parseChannelConfig('WEBHOOK', {
       url: 'https://does-not-resolve.invalid/hook',
       signingSecret: 'secret',
-    })).resolves.toEqual({ type: 'WEBHOOK', url: 'https://does-not-resolve.invalid/hook', signingSecret: 'secret' })
+    })).toEqual({ type: 'WEBHOOK', url: 'https://does-not-resolve.invalid/hook', signingSecret: 'secret' })
   })
 
   it.each([
     'http://public.example.test/hook',
     'https://user:password@public.example.test/hook',
     'https://public.example.test:8443/hook',
-  ])('rejects structurally unsafe webhook URL %s before dispatch', async (url) => {
-    await expect(validateChannelConfig('WEBHOOK', { url, signingSecret: 'secret' })).rejects.toThrow('Invalid channel configuration')
+  ])('rejects structurally unsafe webhook URL %s before dispatch', (url) => {
+    expect(() => parseChannelConfig('WEBHOOK', { url, signingSecret: 'secret' })).toThrow('Invalid channel configuration')
+  })
+
+  it.each([
+    ['https://127.0.0.1/hook', async () => ['93.184.216.34']],
+    ['https://hook.example.test/hook', async () => ['93.184.216.34', '10.0.0.1']],
+    ['https://hook.example.test/hook', async () => { throw new Error('ENOTFOUND') }],
+  ])('persistence validation fails closed for unsafe or unresolvable webhook target %s', async (url, lookup) => {
+    await expect(validateChannelConfigForPersistence('WEBHOOK', { url, signingSecret: 'secret' }, {
+      validateWebhookTarget: (target) => validateWebhookTarget(target, { lookup }),
+    })).rejects.toThrow('Invalid channel configuration')
+  })
+
+  it('persistence validation pins a rebinding hostname while saving', async () => {
+    let calls = 0
+    await expect(validateChannelConfigForPersistence('WEBHOOK', {
+      url: 'https://hook.example.test/hook', signingSecret: 'secret',
+    }, {
+      validateWebhookTarget: (target) => validateWebhookTarget(target, {
+        lookup: async () => {
+          calls += 1
+          return calls === 1 ? ['93.184.216.34'] : ['127.0.0.1']
+        },
+      }),
+    })).resolves.toEqual({ type: 'WEBHOOK', url: 'https://hook.example.test/hook', signingSecret: 'secret' })
+    expect(calls).toBe(1)
   })
 })

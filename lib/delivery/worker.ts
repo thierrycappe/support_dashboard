@@ -13,7 +13,7 @@ import { getDb, type Db } from '@/lib/db'
 import { getPushoverConfig } from '@/lib/notifications/pushover'
 import { after } from 'next/server'
 import { decryptChannelConfig, loadChannelKeyring, type ChannelKeyring } from '@/lib/routing/crypto'
-import { validateChannelConfig } from '@/lib/routing/channel-schemas'
+import { parseChannelConfig } from '@/lib/routing/channel-schemas'
 
 export interface DeliverySweepResult {
   claimed: number
@@ -174,7 +174,7 @@ async function configForJob({
       ciphertext: channel.encryptedConfig,
       authTag: channel.configAuthTag,
     }, { channelId: channel.id, type: channel.type }, keyring)
-    return await validateChannelConfig(channel.type, config)
+    return parseChannelConfig(channel.type, config)
   } catch {
     return null
   }

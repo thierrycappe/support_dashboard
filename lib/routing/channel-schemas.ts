@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { ChannelConfig, DeliveryChannelType } from '@/lib/delivery/types'
+import { validateWebhookTarget } from '@/lib/delivery/webhook-target'
 
 const emailConfigSchema = z.object({
   to: z.array(z.string().email()).min(1),
@@ -34,8 +35,20 @@ export function parseChannelConfig(type: DeliveryChannelType, value: unknown): C
   return { type, ...config.data } as ChannelConfig
 }
 
-export async function validateChannelConfig(type: DeliveryChannelType, value: unknown): Promise<ChannelConfig> {
-  return parseChannelConfig(type, value)
+export async function validateChannelConfigForPersistence(
+  type: DeliveryChannelType,
+  value: unknown,
+  { validateWebhookTarget: validateTarget = validateWebhookTarget }: { validateWebhookTarget?: typeof validateWebhookTarget } = {},
+): Promise<ChannelConfig> {
+  const config = parseChannelConfig(type, value)
+  if (config.type !== 'WEBHOOK') return config
+  try {
+    const target = await validateTarget(config.url)
+    await target.dispatcher.close()
+    return config
+  } catch {
+    throw new Error('Invalid channel configuration')
+  }
 }
 
 export function serializeChannelConfig(config: ChannelConfig): string {

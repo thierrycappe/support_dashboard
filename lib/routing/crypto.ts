@@ -20,7 +20,9 @@ export interface ChannelCryptoContext {
   type: DeliveryChannelType
 }
 
-const keyVersionSchema = z.string().regex(/^v[1-9]\d*$/)
+const keyVersionSchema = z.string()
+  .regex(/^v[1-9]\d*$/)
+  .refine((version) => /^v[1-9]\d*$/.test(version) && BigInt(version.slice(1)) <= 2_147_483_647n)
 
 const keyringSchema = z.object({
   active: keyVersionSchema,
