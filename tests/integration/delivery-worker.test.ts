@@ -1,9 +1,11 @@
+import { createCipheriv } from 'node:crypto'
 import { createServer } from 'node:http'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql, type SQL } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
 import { drainImmediateDeliveries, runDeliverySweep } from '@/lib/delivery/worker'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
+import { getDatabaseDeliveryChannel } from '@/lib/delivery/repository'
 import { encryptChannelConfig, parseChannelKeyring } from '@/lib/routing/crypto'
 import type { ChannelConfig } from '@/lib/delivery/types'
 import { requireTestDatabaseUrl } from './helpers/database'
@@ -120,18 +122,92 @@ describe('runDeliverySweep', () => {
     expect(await outboxStatuses()).toEqual(['SENT', 'SENT', 'SENT'])
   })
 
-  it('makes tampered and unknown-key database records visible permanent configuration failures', async () => {
-    await seedDatabaseChannel('database-tampered', { type: 'EMAIL', to: ['alerts@example.test'] }, { ciphertext: 'AAAA' })
-    await seedDatabaseChannel('database-unknown-key', { type: 'EMAIL', to: ['alerts@example.test'] }, { keyVersion: 9 })
-    await seedOutbox('job-database-tampered', { configSource: 'DATABASE', targetKey: 'channel:database-tampered', channelId: 'database-tampered', channelType: 'EMAIL' })
-    await seedOutbox('job-database-unknown-key', { configSource: 'DATABASE', targetKey: 'channel:database-unknown-key', channelId: 'database-unknown-key', channelType: 'EMAIL', generation: 2 })
+  it('turns every database configuration failure into the same permanent sanitized attempt', async () => {
+    const invalidPayload = encryptRawChannelPayload('database-invalid-plaintext', 'EMAIL', '{"to":[]}')
+    const fixtures = [
+      {
+        name: 'missing-keyring', channelId: 'database-missing-keyring', channelType: 'EMAIL' as const,
+        keyring: null,
+        setup: () => seedDatabaseChannel('database-missing-keyring', { type: 'EMAIL', to: ['alerts@example.test'] }),
+      },
+      {
+        name: 'inactive', channelId: 'database-inactive', channelType: 'EMAIL' as const,
+        setup: () => seedDatabaseChannel('database-inactive', { type: 'EMAIL', to: ['alerts@example.test'] }, { status: 'DISABLED' }),
+      },
+      {
+        name: 'type-mismatch', channelId: 'database-type-mismatch', channelType: 'PUSHOVER' as const,
+        setup: () => seedDatabaseChannel('database-type-mismatch', { type: 'EMAIL', to: ['alerts@example.test'] }),
+      },
+      {
+        name: 'invalid-plaintext', channelId: 'database-invalid-plaintext', channelType: 'EMAIL' as const,
+        setup: () => seedDatabaseChannel('database-invalid-plaintext', { type: 'EMAIL', to: ['alerts@example.test'] }, invalidPayload),
+      },
+      {
+        name: 'tampered', channelId: 'database-tampered', channelType: 'EMAIL' as const,
+        setup: () => seedDatabaseChannel('database-tampered', { type: 'EMAIL', to: ['alerts@example.test'] }, { ciphertext: 'AAAA' }),
+      },
+      {
+        name: 'unknown-key', channelId: 'database-unknown-key', channelType: 'EMAIL' as const,
+        setup: () => seedDatabaseChannel('database-unknown-key', { type: 'EMAIL', to: ['alerts@example.test'] }, { keyVersion: 9 }),
+      },
+    ]
+    for (const fixture of fixtures) {
+      await fixture.setup()
+      const id = `job-database-${fixture.name}`
+      await seedOutbox(id, {
+        configSource: 'DATABASE', targetKey: `channel:${fixture.channelId}`, channelId: fixture.channelId,
+        channelType: fixture.channelType, generation: fixtures.indexOf(fixture) + 1,
+      })
+      await runDeliverySweep({
+        db: getDb(), limit: 1, now, workerId: `worker-${fixture.name}`, legacyConfig: legacyConfig(),
+        keyring: fixture.keyring === null ? null : channelKeyring,
+        send: async () => { throw new Error('invalid config must not dispatch') },
+      })
+    }
 
-    await runDeliverySweep({ db: getDb(), limit: 2, now, workerId: 'worker', legacyConfig: legacyConfig(), keyring: channelKeyring, send: async () => { throw new Error('invalid config must not dispatch') } })
+    for (const fixture of fixtures) {
+      const id = `job-database-${fixture.name}`
+      const observed = await attempt(id)
+      expect((await outbox(id)).status).toBe('FAILED')
+      expect(observed).toEqual({ resultClass: 'permanent', providerStatus: null, providerMessageId: null, sanitizedError: 'CONFIGURATION_INVALID' })
+      expect(JSON.stringify(observed)).not.toContain('alerts@example.test')
+      expect(JSON.stringify(observed)).not.toContain(invalidPayload.ciphertext)
+    }
+  })
 
-    expect((await outbox('job-database-tampered')).status).toBe('FAILED')
-    expect((await outbox('job-database-unknown-key')).status).toBe('FAILED')
-    expect(await attempt('job-database-tampered')).toMatchObject({ resultClass: 'permanent', sanitizedError: 'CONFIGURATION_INVALID' })
-    expect(await attempt('job-database-unknown-key')).toMatchObject({ resultClass: 'permanent', sanitizedError: 'CONFIGURATION_INVALID' })
+  it('renews a short lease before a slow database configuration lookup', async () => {
+    await seedDatabaseChannel('database-slow-lookup', { type: 'EMAIL', to: ['alerts@example.test'] })
+    await seedOutbox('job-database-slow-lookup', { configSource: 'DATABASE', targetKey: 'channel:database-slow-lookup', channelId: 'database-slow-lookup', channelType: 'EMAIL' })
+    const lookupStarted = deferred<void>()
+    let sends = 0
+    const first = runDeliverySweep({
+      db: getDb(), limit: 1, now: new Date(), workerId: 'slow-config-worker', legacyConfig: legacyConfig(), keyring: channelKeyring,
+      leaseDurationMs: 50, leaseRenewalMs: 10,
+      loadDatabaseChannel: async (input) => {
+        lookupStarted.resolve()
+        await sleep(120)
+        return getDatabaseDeliveryChannel(input)
+      },
+      send: async () => {
+        sends += 1
+        return sent()
+      },
+    })
+    await lookupStarted.promise
+    await sleep(70)
+    const second = await runDeliverySweep({
+      db: getDb(), limit: 1, now: new Date(), workerId: 'overlap-worker', legacyConfig: legacyConfig(), keyring: channelKeyring,
+      leaseDurationMs: 50, leaseRenewalMs: 10,
+      send: async () => {
+        sends += 1
+        return sent()
+      },
+    })
+    await first
+
+    expect(second.claimed).toBe(0)
+    expect(sends).toBe(1)
+    expect(await scalar(sql`select count(*)::int as count from delivery_attempts`)).toBe(1)
   })
 
   it('releases an unconfigured legacy target into the future so a drain does not churn it', async () => {
@@ -328,17 +404,25 @@ async function seedOutbox(id: string, options: {
 async function seedDatabaseChannel(
   id: string,
   config: ChannelConfig,
-  overrides: Partial<{ ciphertext: string; keyVersion: number }> = {},
+  overrides: Partial<{ ciphertext: string; nonce: string; authTag: string; keyVersion: number; status: 'ACTIVE' | 'DISABLED' | 'UNHEALTHY' }> = {},
 ): Promise<void> {
   const encrypted = encryptChannelConfig(config, { channelId: id, type: config.type }, channelKeyring)
   await getDb().execute(sql`
     insert into notification_channels (
       id, group_id, name, type, status, encrypted_config, config_nonce, config_auth_tag, key_version, created_at, updated_at
     ) values (
-      ${id}, 'worker-group', ${id}, ${config.type}::"ChannelType", 'ACTIVE',
-      ${overrides.ciphertext ?? encrypted.ciphertext}, ${encrypted.nonce}, ${encrypted.authTag}, ${overrides.keyVersion ?? 1}, ${now}, ${now}
+      ${id}, 'worker-group', ${id}, ${config.type}::"ChannelType", ${overrides.status ?? 'ACTIVE'}::"ChannelStatus",
+      ${overrides.ciphertext ?? encrypted.ciphertext}, ${overrides.nonce ?? encrypted.nonce}, ${overrides.authTag ?? encrypted.authTag}, ${overrides.keyVersion ?? 1}, ${now}, ${now}
     )
   `)
+}
+
+function encryptRawChannelPayload(channelId: string, type: 'EMAIL' | 'PUSHOVER' | 'WEBHOOK', plaintext: string): { ciphertext: string; nonce: string; authTag: string } {
+  const nonce = Buffer.alloc(12, 7)
+  const cipher = createCipheriv('aes-256-gcm', channelKeyring.keys.v1!, nonce)
+  cipher.setAAD(Buffer.from(`support-tower-channel:${channelId}:${type}:v1`))
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  return { ciphertext: ciphertext.toString('base64'), nonce: nonce.toString('base64'), authTag: cipher.getAuthTag().toString('base64') }
 }
 
 async function outbox(id: string): Promise<{ status: string; attemptCount: number; nextAttemptAt: Date; leaseExpiresAt: Date | null }> {

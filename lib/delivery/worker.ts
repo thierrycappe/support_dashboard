@@ -38,6 +38,7 @@ export async function runDeliverySweep({
   legacyConfig = defaultLegacyConfig(),
   send = dispatchDelivery,
   keyring,
+  loadDatabaseChannel = getDatabaseDeliveryChannel,
   concurrency = 20,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   leaseRenewalMs = Math.max(1, Math.floor(leaseDurationMs / 3)),
@@ -49,6 +50,7 @@ export async function runDeliverySweep({
   legacyConfig?: { type: 'PUSHOVER'; appToken: string; userKey: string } | null
   send?: DeliverySender
   keyring?: ChannelKeyring | null
+  loadDatabaseChannel?: typeof getDatabaseDeliveryChannel
   concurrency?: number
   leaseDurationMs?: number
   leaseRenewalMs?: number
@@ -68,21 +70,22 @@ export async function runDeliverySweep({
   }
 
   await runWithConcurrency(claimed, activeConcurrency, async (job) => {
-    const config = await configForJob({ db, job, legacyConfig, keyring: channelKeyring })
-    if (!config) {
-      if (job.configSource === 'LEGACY_ENV') {
-        await releaseLegacyConfigurationNotReady({ db, id: job.id, workerId, now })
-        result.configurationNotReady += 1
+    const stopRenewal = await beginLeaseRenewal({ db, id: job.id, workerId, leaseDurationMs, leaseRenewalMs })
+    if (!stopRenewal) return
+    try {
+      const config = await configForJob({ db, job, legacyConfig, keyring: channelKeyring, loadDatabaseChannel })
+      if (!config) {
+        if (job.configSource === 'LEGACY_ENV') {
+          await releaseLegacyConfigurationNotReady({ db, id: job.id, workerId, now })
+          result.configurationNotReady += 1
+          return
+        }
+        await finishConfigurationFailure({ db, id: job.id, workerId })
+        result.failed += 1
         return
       }
-      await finishConfigurationFailure({ db, id: job.id, workerId })
-      result.failed += 1
-      return
-    }
 
-    result.started += 1
-    const stopRenewal = beginLeaseRenewal({ db, id: job.id, workerId, leaseDurationMs, leaseRenewalMs })
-    try {
+      result.started += 1
       const startedAt = new Date()
       const outcome = await send({
         event: job.renderedPayload as unknown as DeliveryEvent,
@@ -102,7 +105,7 @@ export async function runDeliverySweep({
   return result
 }
 
-function beginLeaseRenewal({
+async function beginLeaseRenewal({
   db,
   id,
   workerId,
@@ -114,7 +117,9 @@ function beginLeaseRenewal({
   workerId: string
   leaseDurationMs: number
   leaseRenewalMs: number
-}): () => void {
+}): Promise<(() => void) | null> {
+  const renewed = await renewDeliveryLease({ db, id, workerId, now: new Date(), leaseDurationMs }).catch(() => false)
+  if (!renewed) return null
   const timer = setInterval(() => {
     // A transient renewal failure must not turn an already-dispatched job into
     // an unhandled rejection. The original lease still protects it until the
@@ -150,16 +155,18 @@ async function configForJob({
   job,
   legacyConfig,
   keyring,
+  loadDatabaseChannel,
 }: {
   db: Db
   job: Awaited<ReturnType<typeof claimLegacyDeliveries>>[number]
   legacyConfig: { type: 'PUSHOVER'; appToken: string; userKey: string } | null
   keyring: ChannelKeyring | null
+  loadDatabaseChannel: typeof getDatabaseDeliveryChannel
 }): Promise<ChannelConfig | null> {
   if (job.configSource === 'LEGACY_ENV') return legacyConfig
   if (!job.channelId || !keyring) return null
   try {
-    const channel = await getDatabaseDeliveryChannel({ db, channelId: job.channelId })
+    const channel = await loadDatabaseChannel({ db, channelId: job.channelId })
     if (!channel || channel.type !== job.channelType) return null
     const config = decryptChannelConfig({
       keyVersion: `v${channel.keyVersion}`,

@@ -20,9 +20,11 @@ export interface ChannelCryptoContext {
   type: DeliveryChannelType
 }
 
+const keyVersionSchema = z.string().regex(/^v[1-9]\d*$/)
+
 const keyringSchema = z.object({
-  active: z.string().min(1),
-  keys: z.record(z.string(), z.string().min(1)),
+  active: keyVersionSchema,
+  keys: z.record(keyVersionSchema, z.string().min(1)),
 }).strict()
 
 export function parseChannelKeyring(value: string): ChannelKeyring {

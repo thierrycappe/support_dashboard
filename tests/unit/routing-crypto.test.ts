@@ -5,6 +5,7 @@ import {
   parseChannelKeyring,
   type ChannelCryptoContext,
 } from '@/lib/routing/crypto'
+import { validateChannelConfig } from '@/lib/routing/channel-schemas'
 
 const keyring = parseChannelKeyring(JSON.stringify({
   active: 'v1',
@@ -41,5 +42,27 @@ describe('channel configuration encryption', () => {
     expect(() => decryptChannelConfig({ ...encrypted, keyVersion: 'v9' }, context, keyring)).toThrow('Unknown channel key version')
     expect(() => encryptChannelConfig({ type: 'EMAIL', to: ['alerts@example.test'], extra: true } as never, context, keyring)).toThrow('Invalid channel configuration')
     expect(() => encryptChannelConfig({ type: 'PUSHOVER', appToken: 'token', userKey: 'user' }, context, keyring)).toThrow('Invalid channel configuration')
+  })
+
+  it.each(['blue', 'v0', 'v01', 'v-1', 'V1'])('rejects non-canonical key version %s', (version) => {
+    expect(() => parseChannelKeyring(JSON.stringify({
+      active: version,
+      keys: { [version]: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=' },
+    }))).toThrow('Invalid channel encryption keyring')
+  })
+
+  it('accepts structurally safe webhook configuration without a live DNS lookup', async () => {
+    await expect(validateChannelConfig('WEBHOOK', {
+      url: 'https://does-not-resolve.invalid/hook',
+      signingSecret: 'secret',
+    })).resolves.toEqual({ type: 'WEBHOOK', url: 'https://does-not-resolve.invalid/hook', signingSecret: 'secret' })
+  })
+
+  it.each([
+    'http://public.example.test/hook',
+    'https://user:password@public.example.test/hook',
+    'https://public.example.test:8443/hook',
+  ])('rejects structurally unsafe webhook URL %s before dispatch', async (url) => {
+    await expect(validateChannelConfig('WEBHOOK', { url, signingSecret: 'secret' })).rejects.toThrow('Invalid channel configuration')
   })
 })

@@ -1,6 +1,5 @@
 import { z } from 'zod'
 import type { ChannelConfig, DeliveryChannelType } from '@/lib/delivery/types'
-import { validateWebhookTarget } from '@/lib/delivery/webhook-target'
 
 const emailConfigSchema = z.object({
   to: z.array(z.string().email()).min(1),
@@ -14,7 +13,12 @@ const pushoverConfigSchema = z.object({
 const webhookConfigSchema = z.object({
   url: z.string().url(),
   signingSecret: z.string().min(1),
-}).strict()
+}).strict().superRefine(({ url }, context) => {
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port) {
+    context.addIssue({ code: 'custom', message: 'Unsafe webhook configuration' })
+  }
+})
 
 export function parseChannelConfig(type: DeliveryChannelType, value: unknown): ChannelConfig {
   if (value && typeof value === 'object' && !Array.isArray(value) && 'type' in value && value.type !== type) {
@@ -31,12 +35,7 @@ export function parseChannelConfig(type: DeliveryChannelType, value: unknown): C
 }
 
 export async function validateChannelConfig(type: DeliveryChannelType, value: unknown): Promise<ChannelConfig> {
-  const config = parseChannelConfig(type, value)
-  if (config.type === 'WEBHOOK') {
-    const target = await validateWebhookTarget(config.url)
-    await target.dispatcher.close()
-  }
-  return config
+  return parseChannelConfig(type, value)
 }
 
 export function serializeChannelConfig(config: ChannelConfig): string {
