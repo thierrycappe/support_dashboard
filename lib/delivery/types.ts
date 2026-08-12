@@ -48,7 +48,10 @@ export interface DeliveryEventInput {
   priority: FeedbackPriority
   title: string
   description: string
-  portalUrl: string
   reporter: { name: string | null; email: string | null }
   includeReporterContext: boolean
+}
+
+export interface DeliveryRenderContext {
+  portalOrigin: string
 }
