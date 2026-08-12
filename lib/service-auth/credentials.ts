@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { decodeProtectedHeader, importJWK, jwtVerify } from 'jose'
 import { sql } from 'drizzle-orm'
 import { appendAuditEvent } from '@/lib/audit/events'
-import { getDb, type Db } from '@/lib/db'
+import { getDb, type Db, type DbTransaction } from '@/lib/db'
 import type { ServicePrincipal } from '@/lib/service-auth/assertions'
 import { publicJwkThumbprint, validateEd25519PublicJwk, type Ed25519PublicJwk } from '@/lib/service-auth/jwk'
 
@@ -84,7 +84,7 @@ export async function getActiveCredential({
 
 export async function beginCredentialRotation({
   db = getDb(), principal, nextPublicJwk, proof, correlationId, now = new Date(),
-  afterPendingCreated, afterAuditAppended, afterDuplicateChecked,
+  afterPendingCreated, afterAuditAppended, afterDuplicateChecked, afterExpiredRotationsAudited,
 }: {
   db?: Db
   principal: ServicePrincipal
@@ -95,6 +95,7 @@ export async function beginCredentialRotation({
   afterPendingCreated?: () => Promise<void>
   afterAuditAppended?: () => Promise<void>
   afterDuplicateChecked?: () => Promise<void>
+  afterExpiredRotationsAudited?: () => Promise<void>
 }): Promise<RotationChallenge> {
   if (!principal.scopes.includes('credentials:rotate')) throw new RotationError('INVALID_PROOF')
   const nextJwk = safePublicJwk(nextPublicJwk, 'INVALID_PROOF')
@@ -120,7 +121,7 @@ export async function beginCredentialRotation({
         proof, current, principal, expectedThumbprint: nextThumbprint, now,
       })
 
-      await expireAndPruneRotations(tx, principal.appId, now)
+      await expireAndPruneRotations({ tx, appId: principal.appId, correlationId, now, afterExpiredRotationsAudited })
 
       const duplicate = await tx.execute(sql`
         select 1 from app_credentials where public_key_thumbprint = ${nextThumbprint} limit 1
@@ -131,11 +132,9 @@ export async function beginCredentialRotation({
       const existing = await tx.execute(sql`
         select 1
           from app_credentials pending
-          join service_assertion_replays replay on replay.credential_id = pending.id
          where pending.rotation_parent_id = ${current.id}
            and pending.status = 'PENDING'
-           and replay.assertion_jti like ${`${CHALLENGE_REPLAY_PREFIX}%`}
-           and replay.expires_at > ${now}
+           and pending.valid_until > ${now}
          limit 1
       `)
       if (existing.rows[0]) throw new RotationError('ROTATION_IN_PROGRESS')
@@ -150,9 +149,9 @@ export async function beginCredentialRotation({
 
       await tx.execute(sql`
         insert into app_credentials
-          (id, source_app_id, public_jwk, public_key_thumbprint, status, valid_from, rotation_parent_id, created_at)
+          (id, source_app_id, public_jwk, public_key_thumbprint, status, valid_from, valid_until, rotation_parent_id, created_at)
         values
-          (${credentialId}, ${principal.appId}, ${JSON.stringify(nextJwk)}::jsonb, ${nextThumbprint}, 'PENDING', ${now}, ${current.id}, ${now})
+          (${credentialId}, ${principal.appId}, ${JSON.stringify(nextJwk)}::jsonb, ${nextThumbprint}, 'PENDING', ${now}, ${expiresAt}, ${current.id}, ${now})
       `)
       await afterPendingCreated?.()
       await tx.execute(sql`
@@ -207,17 +206,18 @@ export async function confirmCredentialRotation({
     `)).rows[0]
     const pending = (await tx.execute<PendingCredentialRow & Record<string, unknown>>(sql`
       select id, source_app_id as "sourceAppId", public_jwk as "publicJwk", status,
-             rotation_parent_id as "rotationParentId"
+             rotation_parent_id as "rotationParentId", valid_until as "validUntil"
         from app_credentials where id = ${credentialId} for update
     `)).rows[0]
     if (!isUsableApp(app) || !isActiveCredential(current, principal.appId, now)
       || !pending || pending.sourceAppId !== principal.appId || pending.status !== 'PENDING'
-      || pending.rotationParentId !== current.id) throw new RotationError('INVALID_CHALLENGE')
+      || pending.rotationParentId !== current.id || !pending.validUntil
+      || new Date(pending.validUntil).getTime() <= now.getTime()) throw new RotationError('INVALID_CHALLENGE')
 
     const marker = `${CHALLENGE_REPLAY_PREFIX}${digest(challenge)}`
     const replay = await tx.execute(sql`
       select 1 from service_assertion_replays
-       where credential_id = ${pending.id} and assertion_jti = ${marker} and expires_at > ${now}
+       where credential_id = ${pending.id} and assertion_jti = ${marker}
        for update
     `)
     if (!replay.rows[0]) throw new RotationError('INVALID_CHALLENGE')
@@ -233,7 +233,7 @@ export async function confirmCredentialRotation({
     const existingExpiry = current.validUntil ? new Date(current.validUntil) : null
     const oldCredentialValidUntil = existingExpiry && existingExpiry < requestedExpiry ? existingExpiry : requestedExpiry
     await tx.execute(sql`
-      update app_credentials set status = 'ACTIVE', valid_from = ${now}
+      update app_credentials set status = 'ACTIVE', valid_from = ${now}, valid_until = null
        where id = ${pending.id}
     `)
     await tx.execute(sql`
@@ -320,6 +320,7 @@ interface PendingCredentialRow {
   publicJwk: unknown
   status: string
   rotationParentId: string | null
+  validUntil: Date | string | null
 }
 
 interface RevocationRow {
@@ -383,26 +384,31 @@ function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
-async function expireAndPruneRotations(
-  tx: Parameters<Parameters<Db['transaction']>[0]>[0],
-  appId: string,
-  now: Date,
-): Promise<void> {
-  await tx.execute(sql`
-    update app_credentials pending
-       set status = 'EXPIRED', valid_until = expired.expires_at
-      from (
-        select replay.credential_id, max(replay.expires_at) as expires_at
-          from service_assertion_replays replay
-         where replay.assertion_jti like ${`${CHALLENGE_REPLAY_PREFIX}%`}
-           and replay.expires_at <= ${now}
-         group by replay.credential_id
-      ) expired
-     where pending.id = expired.credential_id
-       and pending.source_app_id = ${appId}
-       and pending.status = 'PENDING'
+async function expireAndPruneRotations({
+  tx, appId, correlationId, now, afterExpiredRotationsAudited,
+}: {
+  tx: DbTransaction
+  appId: string
+  correlationId: string
+  now: Date
+  afterExpiredRotationsAudited?: () => Promise<void>
+}): Promise<void> {
+  const expired = await tx.execute<{ id: string } & Record<string, unknown>>(sql`
+    update app_credentials
+       set status = 'EXPIRED'
+     where source_app_id = ${appId}
+       and status = 'PENDING'
+       and valid_until <= ${now}
+     returning id
   `)
-  await tx.execute(sql`
+  for (const credential of expired.rows) {
+    await appendAuditEvent({
+      db: tx, actorId: appId, correlationId, reason: 'Pending credential rotation expired',
+      action: 'SERVICE_CREDENTIAL_ROTATION_EXPIRED', subjectType: 'app_credential', subjectId: credential.id, now,
+    })
+  }
+  await afterExpiredRotationsAudited?.()
+  const prunable = await tx.execute<{ id: string } & Record<string, unknown>>(sql`
     with ranked as (
       select id, row_number() over (order by created_at desc, id desc) as position
         from app_credentials
@@ -410,11 +416,17 @@ async function expireAndPruneRotations(
          and status = 'EXPIRED'
          and rotation_parent_id is not null
     )
-    delete from app_credentials credential
-     using ranked
-     where credential.id = ranked.id
-       and ranked.position > ${MAX_RETAINED_EXPIRED_ROTATIONS}
+    select id from ranked where position > ${MAX_RETAINED_EXPIRED_ROTATIONS}
   `)
+  for (const credential of prunable.rows) {
+    await appendAuditEvent({
+      db: tx, actorId: appId, correlationId, reason: 'Expired credential rotation pruned by retention policy',
+      action: 'SERVICE_CREDENTIAL_ROTATION_PRUNED', subjectType: 'app_credential', subjectId: credential.id, now,
+    })
+    await tx.execute(sql`
+      delete from app_credentials where id = ${credential.id} and source_app_id = ${appId} and status = 'EXPIRED'
+    `)
+  }
 }
 
 function isThumbprintUniqueViolation(error: unknown): boolean {

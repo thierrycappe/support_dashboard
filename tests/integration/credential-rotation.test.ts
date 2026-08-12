@@ -6,6 +6,7 @@ import { closeDbPool, getDb } from '@/lib/db'
 import { POST as beginRoute } from '@/app/api/v1/credentials/rotate/route'
 import { POST as confirmRoute } from '@/app/api/v1/credentials/rotate/confirm/route'
 import { issueServiceAccessToken } from '@/lib/service-auth/access-tokens'
+import { cleanupExpiredAssertionReplays } from '@/lib/service-auth/assertions'
 import {
   beginCredentialRotation,
   confirmCredentialRotation,
@@ -63,9 +64,9 @@ describe('overlapping credential rotation', () => {
       db: getDb(), principal: principal(), nextPublicJwk: nextJwk, proof, correlationId: randomUUID(), now,
     })
     expect(begun.expiresAt).toEqual(new Date(now.getTime() + 5 * 60_000))
-    const stored = await getDb().execute<{ status: string; publicJwk: unknown; replay: string; expiresAt: string }>(sql`
+    const stored = await getDb().execute<{ status: string; publicJwk: unknown; replay: string; expiresAt: string; validUntil: string }>(sql`
       select credential.status, credential.public_jwk as "publicJwk", replay.assertion_jti as replay,
-             replay.expires_at as "expiresAt"
+             replay.expires_at as "expiresAt", credential.valid_until as "validUntil"
         from app_credentials credential
         join service_assertion_replays replay on replay.credential_id = credential.id
        where credential.id = ${begun.credentialId} and replay.assertion_jti like 'rotation-challenge:%'
@@ -73,6 +74,7 @@ describe('overlapping credential rotation', () => {
     expect(stored.rows[0]).toMatchObject({ status: 'PENDING', publicJwk: nextJwk })
     expect(stored.rows[0]!.replay).toBe(`rotation-challenge:${digest(begun.challenge)}`)
     expect(new Date(stored.rows[0]!.expiresAt)).toEqual(begun.expiresAt)
+    expect(new Date(stored.rows[0]!.validUntil)).toEqual(begun.expiresAt)
     expect(JSON.stringify(stored.rows[0])).not.toContain(begun.challenge)
 
     const confirmed = await confirmCredentialRotation({
@@ -83,6 +85,10 @@ describe('overlapping credential rotation', () => {
     const overlapLimit = new Date(now.getTime() + 7 * 24 * 60 * 60_000)
     expect(confirmed.oldCredentialValidUntil).toEqual(overlapLimit)
     await expect(getActiveCredential({ db: getDb(), credentialId: begun.credentialId, now })).resolves.toMatchObject({ sourceAppId: appId })
+    const activated = await getDb().execute<{ validUntil: string | null } & Record<string, unknown>>(sql`
+      select valid_until as "validUntil" from app_credentials where id = ${begun.credentialId}
+    `)
+    expect(activated.rows[0]?.validUntil).toBeNull()
     await expect(getActiveCredential({ db: getDb(), credentialId: currentCredentialId, now: new Date(overlapLimit.getTime() - 1) })).resolves.not.toBeNull()
     await expect(getActiveCredential({ db: getDb(), credentialId: currentCredentialId, now: overlapLimit })).resolves.toBeNull()
   })
@@ -132,15 +138,19 @@ describe('overlapping credential rotation', () => {
 
   it('expires stale pending rotations and bounds retained history per app', async () => {
     let attemptNow = now
+    const lifecycleCorrelation = randomUUID()
     for (let attempt = 0; attempt < MAX_RETAINED_EXPIRED_ROTATIONS + 5; attempt += 1) {
       const keys = await generateKeyPair('EdDSA', { extractable: true })
       const publicJwk = await exportJWK(keys.publicKey) as Record<string, unknown>
       await beginCredentialRotation({
         db: getDb(), principal: principal(), nextPublicJwk: publicJwk,
         proof: await rotationProof(publicJwk, `expiry-${attempt}`, { issuedAt: attemptNow }),
-        correlationId: randomUUID(), now: attemptNow,
+        correlationId: lifecycleCorrelation, now: attemptNow,
       })
-      attemptNow = new Date(attemptNow.getTime() + 5 * 60_000 + 1)
+      attemptNow = new Date(attemptNow.getTime() + 5 * 60_000 + 6_000)
+      if (attempt < MAX_RETAINED_EXPIRED_ROTATIONS + 4) {
+        await cleanupExpiredAssertionReplays({ db: getDb(), now: attemptNow, limit: 500 })
+      }
     }
     expect(await count(sql`
       select count(*)::int as count from app_credentials
@@ -154,6 +164,51 @@ describe('overlapping credential rotation', () => {
       select count(*)::int as count from app_credentials
        where source_app_id = ${appId} and status in ('PENDING', 'EXPIRED')
     `)).toBe(MAX_RETAINED_EXPIRED_ROTATIONS + 1)
+    const lifecycleAudits = await getDb().execute<{ action: string; subjectId: string } & Record<string, unknown>>(sql`
+      select action, subject_id as "subjectId" from audit_events
+       where request_correlation_id = ${lifecycleCorrelation}
+         and action in ('SERVICE_CREDENTIAL_ROTATION_EXPIRED', 'SERVICE_CREDENTIAL_ROTATION_PRUNED')
+       order by created_at, id
+    `)
+    expect(lifecycleAudits.rows.filter(({ action }) => action === 'SERVICE_CREDENTIAL_ROTATION_EXPIRED')).toHaveLength(24)
+    expect(lifecycleAudits.rows.filter(({ action }) => action === 'SERVICE_CREDENTIAL_ROTATION_PRUNED')).toHaveLength(4)
+    expect(new Set(lifecycleAudits.rows.map(({ subjectId }) => subjectId)).size).toBe(24)
+  })
+
+  it('rolls back durable expiration and its lifecycle audit when the transaction fails', async () => {
+    const correlationId = randomUUID()
+    const begun = await beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: nextJwk,
+      proof: await rotationProof(nextJwk, 'expiry-rollback-first'), correlationId, now,
+    })
+    const later = new Date(now.getTime() + 5 * 60_000 + 6_000)
+    await cleanupExpiredAssertionReplays({ db: getDb(), now: later, limit: 500 })
+    await expect(beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: otherJwk,
+      proof: await rotationProof(otherJwk, 'expiry-rollback-second', { issuedAt: later }), correlationId, now: later,
+      afterExpiredRotationsAudited: async () => { throw new Error('injected lifecycle audit failure') },
+    })).rejects.toThrow('injected lifecycle audit failure')
+    const credential = await getDb().execute<{ status: string } & Record<string, unknown>>(sql`
+      select status from app_credentials where id = ${begun.credentialId}
+    `)
+    expect(credential.rows[0]?.status).toBe('PENDING')
+    expect(await count(sql`
+      select count(*)::int as count from audit_events
+       where request_correlation_id = ${correlationId} and action = 'SERVICE_CREDENTIAL_ROTATION_EXPIRED'
+    `)).toBe(0)
+  })
+
+  it('enforces one durable live pending rotation even if its replay marker is missing', async () => {
+    const begun = await beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: nextJwk,
+      proof: await rotationProof(nextJwk, 'durable-live-first'), correlationId: randomUUID(), now,
+    })
+    await getDb().execute(sql`delete from service_assertion_replays where credential_id = ${begun.credentialId}`)
+    await expect(beginCredentialRotation({
+      db: getDb(), principal: principal(), nextPublicJwk: otherJwk,
+      proof: await rotationProof(otherJwk, 'durable-live-second'), correlationId: randomUUID(), now,
+    })).rejects.toMatchObject({ code: 'ROTATION_IN_PROGRESS' })
+    expect(await count(sql`select count(*)::int as count from app_credentials where status = 'PENDING'`)).toBe(1)
   })
 
   it('maps only the thumbprint unique race to a deterministic duplicate conflict with no partial writes', async () => {

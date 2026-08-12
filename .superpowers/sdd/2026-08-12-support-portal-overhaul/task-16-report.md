@@ -143,3 +143,63 @@ Full gates:
 ### Concerns
 
 - Cleanup is intentionally opportunistic per app at begin time: it bounds every app that continues rotating without adding global scheduled-maintenance scope. Dormant apps may retain their already finite historical rows until their next rotation.
+
+## Fix Round 2 — Durable Expiry and Lifecycle Audit
+
+### Implementation
+
+- Reused `app_credentials.valid_until` as the durable pending-rotation challenge deadline. It already represents credential usability bounds: begin now writes the exact five-minute deadline, confirmation requires it to be strictly in the future, and activation clears it before installing the independent old-key overlap deadline.
+- Pending expiry, retention pruning, and the one-live-pending check now use locked credential state only and never depend on replay-marker retention. Confirmation independently requires both the durable deadline and the one-time challenge digest marker, then deletes that marker transactionally.
+- Every `PENDING` → `EXPIRED` transition appends `SERVICE_CREDENTIAL_ROTATION_EXPIRED` with the affected credential subject ID. Every deletion beyond the newest-20 retention bound first appends `SERVICE_CREDENTIAL_ROTATION_PRUNED` with the deleted credential subject ID. Both use fixed sanitized reasons and the current correlation ID in the same transaction.
+- No migration was needed: the existing nullable UTC `valid_until` column safely expresses both pending challenge validity and active-key validity according to credential status.
+
+### RED evidence
+
+Command:
+
+```bash
+TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:55442/support_task6_test?support_test=1' \
+  npx vitest run --config vitest.integration.config.ts tests/integration/credential-rotation.test.ts --reporter=verbose
+```
+
+Before the fix, the new tests observed:
+
+- pending `valid_until` was null rather than the returned five-minute deadline;
+- cleanup of expired replay markers between every rotation left 25 `PENDING` credentials rather than one live plus bounded expired history;
+- the lifecycle-audit rollback hook was never reached because no durable expiration occurred;
+- deleting a still-live challenge marker allowed a second live pending rotation, proving the one-pending check still depended on replay state.
+
+### GREEN evidence
+
+Focused live PostgreSQL suite:
+
+```text
+Test Files  1 passed (1)
+Tests       22 passed (22)
+```
+
+The retained tests delete expired replay markers between every attempt, still obtain one live pending and exactly 20 expired rows, and assert exactly 24 expiration audits plus four prune audits over exactly 24 credential identities. They also prove missing live replay state cannot create a second live pending rotation, activated credentials clear the challenge deadline, and injected post-expiration-audit failure rolls back both state transition and audit.
+
+Additional completed gates:
+
+| Command | Result |
+| --- | --- |
+| `npx vitest run tests/unit/credential-rotation-routes.test.ts --reporter=verbose` | Passed: 3 tests |
+| `npx eslint lib/service-auth/credentials.ts tests/integration/credential-rotation.test.ts` | Passed |
+| `git diff --check` | Passed |
+
+### Full-gate coordination
+
+The shared worktree currently contains concurrent uncommitted Task 17 RED test files (`tests/components/product-shell.test.tsx` and `tests/components/ui-components.test.tsx`) importing not-yet-created Task 17 components. Consequently repository-wide typecheck and unit collection fail only on those missing Task 17 modules. Per parent direction, this Fix Round 2 commit is scoped now; root will rerun the combined full unit, integration, typecheck, lint, scenario, and build gates after Task 17 lands.
+
+### Self-review
+
+- Durable deadline comparison is strict at the boundary (`valid_until <= now` expires; confirmation requires `valid_until > now`).
+- Replay cleanup can remove expired digests without changing expiration, retention, or live-pending cardinality; a missing live digest prevents confirmation but does not permit parallel rotation.
+- Audit records are appended before pruning and survive credential deletion because audit subjects are immutable textual identities, not credential foreign keys.
+- Expiry/audit/prune/new-pending mutations share the app-locked transaction, and injected failure proves state and audit rollback together.
+- No challenge, digest, JWK, nonce, signature, or database detail is included in lifecycle audits.
+
+### Concerns
+
+- No Task 16 blocker remains. Full repository gates await the concurrently owned Task 17 component implementation described above.
