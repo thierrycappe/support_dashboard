@@ -8,7 +8,7 @@ import type { ServicePrincipal, ServiceScope } from '@/lib/service-auth/assertio
 import { verifyServiceAccessToken } from '@/lib/service-auth/access-tokens'
 import { invitationDigestMatches } from '@/lib/service-auth/invitations'
 import { publicJwkThumbprint, validateEd25519PublicJwk } from '@/lib/service-auth/jwk'
-import { consumeRequiredLimits, getTrustedClientIp, serviceRateLimits } from '@/lib/service-auth/rate-limit'
+import { consumeServiceRateLimit, getTrustedClientIp, serviceRateLimits, ServiceRateLimitError, type RateLimitDecision } from '@/lib/service-auth/rate-limit'
 
 export class RequestBodyError extends Error {
   constructor(readonly kind: 'invalid' | 'too_large') { super(kind) }
@@ -127,36 +127,57 @@ export async function exchangeEnrollment({
 }): Promise<EnrollmentExchangeResult> {
   const jwk = validateEd25519PublicJwk(publicJwk)
   const thumbprint = publicJwkThumbprint(jwk)
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx): Promise<EnrollmentExchangeResult | EnrollmentRateLimited> => {
+    const projected = await tx.execute<{
+      sourceAppId: string
+      tokenDigest: string
+    } & Record<string, unknown>>(sql`
+      select source_app_id as "sourceAppId", token_digest as "tokenDigest"
+        from app_enrollment_grants where id = ${grantId}
+    `)
+    const projection = projected.rows[0]
+    if (!projection) {
+      const ipDecision = await consumeServiceRateLimit({
+        tx, scope: 'enrollment:ip', subject: clientIp, ...serviceRateLimits.enrollmentIp, now,
+      })
+      if (!ipDecision.allowed) return { kind: 'rate_limited', decision: ipDecision, scope: 'enrollment:ip' }
+      return { kind: 'invalid' }
+    }
+
+    const rateLimited = await consumeEnrollmentLimits(tx, projection.tokenDigest, clientIp, now)
+    if (rateLimited) return rateLimited
+
+    // Enrollment always locks the owning app before the grant. App lifecycle
+    // mutations need only the app lock; invitation revocation needs only the
+    // grant lock, so neither can form the inverse two-row lock order.
+    const apps = await tx.execute<{
+      id: string; appStatus: string; enrollmentStatus: string; credentialMode: string
+    } & Record<string, unknown>>(sql`
+      select id, status as "appStatus", enrollment_status as "enrollmentStatus", credential_mode as "credentialMode"
+        from source_apps where id = ${projection.sourceAppId} for update
+    `)
+    const app = apps.rows[0]
+    if (!app) return { kind: 'invalid' }
+    await afterAppLocked?.()
     const grants = await tx.execute<{
-      id: string; sourceAppId: string; tokenDigest: string; expiresAt: Date; consumedAt: Date | null; revokedAt: Date | null
+      id: string; sourceAppId: string; tokenDigest: string; expiresAt: Date | string; consumedAt: Date | string | null; revokedAt: Date | string | null
     } & Record<string, unknown>>(sql`
       select id, source_app_id as "sourceAppId", token_digest as "tokenDigest", expires_at as "expiresAt",
              consumed_at as "consumedAt", revoked_at as "revokedAt"
         from app_enrollment_grants where id = ${grantId} for update
     `)
     const grant = grants.rows[0]
-    if (!grant) {
-      await consumeRequiredLimits(tx, [{ scope: 'enrollment:ip', subject: clientIp, ...serviceRateLimits.enrollmentIp, now }])
-      return { kind: 'invalid' }
-    }
-    const apps = await tx.execute<{
-      id: string; appStatus: string; enrollmentStatus: string; credentialMode: string
-    } & Record<string, unknown>>(sql`
-      select id, status as "appStatus", enrollment_status as "enrollmentStatus", credential_mode as "credentialMode"
-        from source_apps where id = ${grant.sourceAppId} for update
-    `)
-    const app = apps.rows[0]
-    if (!app) return { kind: 'invalid' }
-    await afterAppLocked?.()
-    if (app.appStatus !== 'ACTIVE' || app.enrollmentStatus !== 'PENDING' || app.credentialMode !== 'LEGACY_BEARER') {
-      return { kind: 'invalid' }
-    }
-    await consumeRequiredLimits(tx, [
-      { scope: 'enrollment:invitation', subject: grant.tokenDigest, ...serviceRateLimits.enrollmentInvitation, now },
-      { scope: 'enrollment:ip', subject: clientIp, ...serviceRateLimits.enrollmentIp, now },
-    ])
-    if (grant.sourceAppId !== app.id || !invitationDigestMatches(invitation, grant.tokenDigest) || grant.consumedAt || grant.revokedAt || grant.expiresAt <= now) {
+    if (!grant
+      || app.appStatus !== 'ACTIVE'
+      || app.enrollmentStatus !== 'PENDING'
+      || app.credentialMode !== 'LEGACY_BEARER'
+      || grant.sourceAppId !== app.id
+      || grant.sourceAppId !== projection.sourceAppId
+      || grant.tokenDigest !== projection.tokenDigest
+      || !invitationDigestMatches(invitation, grant.tokenDigest)
+      || grant.consumedAt
+      || grant.revokedAt
+      || new Date(grant.expiresAt).getTime() <= now.getTime()) {
       return { kind: 'invalid' }
     }
     const credentialId = nanoid()
@@ -178,6 +199,8 @@ export async function exchangeEnrollment({
     await afterAuditAppended?.()
     return { kind: 'created', appId: grant.sourceAppId, credentialId, keyId: thumbprint }
   })
+  if (result.kind === 'rate_limited') throw new ServiceRateLimitError(result.decision, result.scope)
+  return result
 }
 
 export { getTrustedClientIp }
@@ -188,4 +211,32 @@ function noStoreHeaders(headers?: HeadersInit): Headers {
   const result = new Headers(headers)
   result.set('Cache-Control', 'no-store')
   return result
+}
+
+interface EnrollmentRateLimited {
+  kind: 'rate_limited'
+  decision: RateLimitDecision
+  scope: string
+}
+
+async function consumeEnrollmentLimits(
+  tx: DbTransaction,
+  tokenDigest: string,
+  clientIp: string,
+  now: Date,
+): Promise<EnrollmentRateLimited | null> {
+  const grantDecision = await consumeServiceRateLimit({
+    tx, scope: 'enrollment:invitation', subject: tokenDigest, ...serviceRateLimits.enrollmentInvitation, now,
+  })
+  const ipDecision = await consumeServiceRateLimit({
+    tx, scope: 'enrollment:ip', subject: clientIp, ...serviceRateLimits.enrollmentIp, now,
+  })
+  const denied = [
+    { scope: 'enrollment:invitation', decision: grantDecision },
+    { scope: 'enrollment:ip', decision: ipDecision },
+  ].filter((entry) => !entry.decision.allowed)
+  if (denied.length === 0) return null
+  const longest = denied.reduce((current, entry) =>
+    entry.decision.retryAfterSeconds > current.decision.retryAfterSeconds ? entry : current)
+  return { kind: 'rate_limited', ...longest }
 }

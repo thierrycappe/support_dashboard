@@ -62,6 +62,8 @@ describe('versioned connector routes', () => {
     expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'SERVICE_APP_ENROLLED' and subject_id = ${appId}`)).toBe(1)
 
     expect((await exchangeRoute(enrollmentRequest(invitation.secret))).status).toBe(401)
+    expect(await bucketCount('enrollment:invitation', await grantRateSubject())).toBe(3)
+    expect(await bucketCount('enrollment:ip', '203.0.113.8')).toBe(3)
   })
 
   it.each([
@@ -78,7 +80,24 @@ describe('versioned connector routes', () => {
     expect(await scalar(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId}`)).toBe(0)
     expect(await scalar(sql`select count(*)::int as count from app_enrollment_grants where id = ${invitation.id} and consumed_at is not null`)).toBe(0)
     expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'SERVICE_APP_ENROLLED' and subject_id = ${appId}`)).toBe(0)
-    expect(await scalar(sql`select count(*)::int as count from service_rate_limit_buckets`)).toBe(0)
+    expect(await bucketCount('enrollment:invitation', await grantRateSubject())).toBe(1)
+    expect(await bucketCount('enrollment:ip', '203.0.113.8')).toBe(1)
+  })
+
+  it.each(['revoked', 'expired'] as const)('accounts for a known %s grant before stable rejection', async (state) => {
+    if (state === 'revoked') await getDb().execute(sql`update app_enrollment_grants set revoked_at = now() where id = ${invitation.id}`)
+    else await getDb().execute(sql`update app_enrollment_grants set expires_at = now() - interval '1 day' where id = ${invitation.id}`)
+
+    expect((await exchangeRoute(enrollmentRequest(invitation.secret))).status).toBe(401)
+    expect(await bucketCount('enrollment:invitation', await grantRateSubject())).toBe(1)
+    expect(await bucketCount('enrollment:ip', '203.0.113.8')).toBe(1)
+    expect(await scalar(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId}`)).toBe(0)
+  })
+
+  it('accounts an unknown opaque grant ID only against trusted IP', async () => {
+    expect((await exchangeRoute(enrollmentRequest('wrong-secret', `unknown-${randomUUID()}`))).status).toBe(401)
+    expect(await bucketCount('enrollment:invitation', await grantRateSubject())).toBe(0)
+    expect(await bucketCount('enrollment:ip', '203.0.113.8')).toBe(1)
   })
 
   it.each([
@@ -178,15 +197,55 @@ describe('versioned connector routes', () => {
     const persisted = await getDb().execute<{ tokenDigest: string }>(sql`
       select token_digest as "tokenDigest" from app_enrollment_grants where id = ${invitation.id}
     `)
-    expect(await scalar(sql`
-      select count(*)::int as count from service_rate_limit_buckets
-       where scope = 'enrollment:invitation' and subject = ${persisted.rows[0]!.tokenDigest} and count = ${serviceRateLimits.enrollmentInvitation.limit}
-    `)).toBe(1)
+    expect(await bucketCount('enrollment:invitation', persisted.rows[0]!.tokenDigest)).toBe(serviceRateLimits.enrollmentInvitation.limit + 2)
+    expect(await bucketCount('enrollment:ip', '203.0.113.8')).toBe(serviceRateLimits.enrollmentInvitation.limit + 2)
     expect(await scalar(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId}`)).toBe(0)
     expect(await scalar(sql`select count(*)::int as count from app_enrollment_grants where id = ${invitation.id} and consumed_at is not null`)).toBe(0)
 
     await getDb().execute(sql`delete from service_rate_limit_buckets where scope = 'enrollment:invitation'`)
     expect((await exchangeRoute(enrollmentRequest(invitation.secret))).status).toBe(201)
+  })
+
+  it.each(['grant-first', 'ip-second'] as const)('commits both attempt counters when %s dimension denies', async (denial) => {
+    const now = new Date()
+    const grantSubject = await grantRateSubject()
+    if (denial === 'grant-first') {
+      for (let count = 0; count < serviceRateLimits.enrollmentInvitation.limit; count += 1) {
+        await consumeServiceRateLimit({ tx: getDb(), scope: 'enrollment:invitation', subject: grantSubject, ...serviceRateLimits.enrollmentInvitation, now })
+      }
+    } else {
+      for (let count = 0; count < serviceRateLimits.enrollmentIp.limit; count += 1) {
+        await consumeServiceRateLimit({ tx: getDb(), scope: 'enrollment:ip', subject: '203.0.113.8', ...serviceRateLimits.enrollmentIp, now })
+      }
+    }
+
+    expect((await exchangeRoute(enrollmentRequest('wrong-secret'))).status).toBe(429)
+    expect(await bucketCount('enrollment:invitation', grantSubject)).toBe(denial === 'grant-first' ? 11 : 1)
+    expect(await bucketCount('enrollment:ip', '203.0.113.8')).toBe(denial === 'grant-first' ? 1 : 31)
+  })
+
+  it('denies over-limit attempts without waiting for the grant row lock', async () => {
+    const now = new Date()
+    const grantSubject = await grantRateSubject()
+    for (let count = 0; count < serviceRateLimits.enrollmentInvitation.limit; count += 1) {
+      await consumeServiceRateLimit({ tx: getDb(), scope: 'enrollment:invitation', subject: grantSubject, ...serviceRateLimits.enrollmentInvitation, now })
+    }
+    const blockerPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL })
+    const blocker = await blockerPool.connect()
+    try {
+      await blocker.query('begin')
+      await blocker.query('select id from app_enrollment_grants where id = $1 for update', [invitation.id])
+      const attempts = Promise.all(Array.from({ length: 3 }, (_, index) =>
+        exchangeRoute(enrollmentRequest(`blocked-wrong-${index}`))))
+      const responses = await withDeadline(attempts, 750, 'rate-limited attempts waited for grant lock')
+      expect(responses.map((response) => response.status)).toEqual([429, 429, 429])
+      expect(await bucketCount('enrollment:invitation', grantSubject)).toBe(13)
+      expect(await bucketCount('enrollment:ip', '203.0.113.8')).toBe(3)
+    } finally {
+      await blocker.query('rollback').catch(() => undefined)
+      blocker.release()
+      await blockerPool.end()
+    }
   })
 
   it.each(['invitation', 'ip'] as const)('enforces the enrollment %s rate-limit dimension', async (dimension) => {
@@ -274,9 +333,9 @@ async function clientAssertion(credentialId: string, jti: string, audience = 'ht
     .setAudience(audience).setIssuedAt(seconds).setExpirationTime(seconds + 30).setJti(jti).sign(appPrivateKey)
 }
 
-function enrollmentRequest(secret: string): Request {
+function enrollmentRequest(secret: string, grantId = invitation.id): Request {
   return jsonRequest('/api/v1/enrollments/exchange', {
-    grant: { id: invitation.id, secret }, publicKey: appPublicJwk,
+    grant: { id: grantId, secret }, publicKey: appPublicJwk,
     connector: { version: '1.0.0', environment: 'test', baseUrl: 'https://source.example.test' },
   }, { 'x-vercel-forwarded-for': '203.0.113.8' })
 }
@@ -310,4 +369,23 @@ async function grantRateSubject(): Promise<string> {
     select token_digest as "tokenDigest" from app_enrollment_grants where id = ${invitation.id}
   `)
   return result.rows[0]!.tokenDigest
+}
+
+async function bucketCount(scope: string, subject: string): Promise<number> {
+  const result = await getDb().execute<{ count: number }>(sql`
+    select count from service_rate_limit_buckets where scope = ${scope} and subject = ${subject}
+  `)
+  return result.rows[0]?.count ?? 0
+}
+
+async function withDeadline<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), milliseconds) }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
