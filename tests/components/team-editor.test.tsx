@@ -24,6 +24,8 @@ describe('team operations editors', () => {
     expect(screen.getByText(/members appear when a support user or recipient is assigned/i)).toBeVisible()
     expect(screen.getByLabelText('Technical group name')).toBeVisible()
     expect(screen.getByRole('checkbox', { name: /Maya Chen/ })).toBeVisible()
+    expect(screen.getByText('Maya Chen', { selector: '.membership-name' }).parentElement).toHaveClass('membership-identity')
+    expect(screen.getByText('maya@example.test', { selector: '.membership-email' })).toBeVisible()
     expect(screen.getByLabelText('External recipient references')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Save group members' })).toBeVisible()
   })

@@ -63,6 +63,12 @@ describe('design accessibility contract', () => {
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.group-ledger,\s*\.channel-ledger,\s*\.group-row,\s*\.channel-row,\s*\.inline-operation-form,\s*\.channel-form,\s*\.group-membership-form,\s*\.channel-secret-replacement\s*\{[\s\S]*?min-width:\s*0[\s\S]*?max-width:\s*100%/)
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.group-row\s*>\s*\*,\s*\.channel-row\s*>\s*\*\s*\{[\s\S]*?min-width:\s*0[\s\S]*?max-width:\s*100%/)
   })
+
+  it('keeps member identity text together beside a fixed checkbox', () => {
+    expect(css).toMatch(/\.membership-options\s+\.check-field\s*>\s*input\s*\{[\s\S]*?flex:\s*none/)
+    expect(css).toMatch(/\.membership-identity\s*\{[\s\S]*?min-width:\s*0[\s\S]*?display:\s*grid/)
+    expect(css).toMatch(/\.membership-name,\s*\.membership-email\s*\{[\s\S]*?display:\s*block[\s\S]*?overflow-wrap:\s*anywhere/)
+  })
 })
 
 function parseThemeTokens(stylesheet: string, selector: string): ThemeTokens {

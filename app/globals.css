@@ -1555,6 +1555,25 @@ pre {
   font-weight: 650;
 }
 
+.membership-options .check-field > input {
+  flex: none;
+  width: auto;
+  min-width: auto;
+  max-width: none;
+}
+
+.membership-identity {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.membership-name,
+.membership-email {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .check-field {
   display: flex;
   align-items: center;
