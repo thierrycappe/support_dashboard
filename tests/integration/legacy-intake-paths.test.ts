@@ -9,7 +9,7 @@ process.env.SUPPORT_TOWER_PUBLIC_URL = 'https://support.example.test'
 const now = new Date('2026-08-12T12:00:00.000Z')
 
 beforeEach(async () => {
-  await getDb().execute(sql`truncate table delivery_attempts, delivery_outbox, escalation_events, feedback_tickets, ingest_receipts, source_apps cascade`)
+  await getDb().execute(sql`truncate table delivery_attempts, delivery_outbox, escalation_events, feedback_tickets, ingest_receipts, source_apps, support_settings cascade`)
   await getDb().execute(sql`insert into source_apps (id, slug, name, environment, status, enrollment_status, credential_mode, created_at, updated_at) values ('legacy-app', 'casal-track', 'Casal Track', 'test', 'ACTIVE', 'ACTIVE', 'LEGACY_BEARER', ${now}, ${now})`)
 })
 afterAll(async () => { await closeDbPool() })

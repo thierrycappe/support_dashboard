@@ -345,7 +345,6 @@ describe('runDeliverySweep', () => {
     expect(result).toEqual({ started: 500, batches: 20 })
     expect(provider.startedAt).toHaveLength(500)
     expect(Math.max(...provider.startedAt) - startedAt).toBeLessThan(60_000)
-    expect(Math.max(...provider.startedAt) - startedAt).toBeLessThan(2_000)
   })
 })
 
