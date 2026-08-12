@@ -19,20 +19,22 @@ export function normalizeSourceTicketUrl(
   try {
     parsedTicketUrl = new URL(ticketUrl)
   } catch {
-    return ticketUrl
+    return null
   }
 
+  if (parsedTicketUrl.username || parsedTicketUrl.password) return null
+
   if (!isLocalhostHostname(parsedTicketUrl.hostname)) {
-    return parsedTicketUrl.toString()
+    return parsePublicUrl(ticketUrl)
   }
 
   const publicBaseUrl = getSourceAppPublicUrl(appSlug, appBaseUrl, env)
   if (!publicBaseUrl) return null
 
-  return new URL(
+  return parsePublicUrl(new URL(
     `${parsedTicketUrl.pathname}${parsedTicketUrl.search}${parsedTicketUrl.hash}`,
     publicBaseUrl,
-  ).toString()
+  ).toString())
 }
 
 export function getSourceAppPublicUrl(
@@ -80,6 +82,6 @@ function parsePublicUrl(value: string): string | null {
     return null
   }
 
-  if (isLocalhostHostname(parsedUrl.hostname)) return null
+  if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password || isLocalhostHostname(parsedUrl.hostname)) return null
   return parsedUrl.toString().replace(/\/+$/, '')
 }

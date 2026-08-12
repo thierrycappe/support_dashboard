@@ -127,7 +127,7 @@ export const ingestReceipts = pgTable('ingest_receipts', {
 
 export const escalationEvents = pgTable('escalation_events', {
   id: text('id').primaryKey(), ticketId: text('ticket_id').notNull().references(() => feedbackTickets.id, { onUpdate: 'cascade', onDelete: 'cascade' }), generation: integer('generation').notNull(), eventKey: text('event_key').notNull(), payload: jsonb('payload').$type<Record<string, unknown>>().notNull(), createdAt: utcTimestamp('created_at').notNull(),
-}, (table) => [uniqueIndex('escalation_events_ticket_generation_idx').on(table.ticketId, table.generation), uniqueIndex('escalation_events_event_key_idx').on(table.eventKey), index('escalation_events_ticket_created_idx').on(table.ticketId, table.createdAt)])
+}, (table) => [uniqueIndex('escalation_events_ticket_generation_idx').on(table.ticketId, table.generation), uniqueIndex('escalation_events_event_key_idx').on(table.eventKey), index('escalation_events_ticket_created_idx').on(table.ticketId, table.createdAt), index('escalation_events_ticket_generation_desc_idx').on(table.ticketId, table.generation.desc(), table.id)])
 
 export const routingIncidents = pgTable('routing_incidents', {
   id: text('id').primaryKey(), escalationEventId: text('escalation_event_id').notNull().references(() => escalationEvents.id, { onUpdate: 'cascade', onDelete: 'cascade' }), reason: text('reason').notNull(), details: jsonb('details').$type<Record<string, unknown>>(), createdAt: utcTimestamp('created_at').notNull(),
@@ -151,6 +151,7 @@ export const deliveryOutbox = pgTable('delivery_outbox', {
   uniqueIndex('delivery_outbox_event_target_generation_idx').on(table.eventKey, table.targetKey, table.generation),
   index('delivery_outbox_claim_idx').on(table.status, table.nextAttemptAt, table.leaseExpiresAt),
   index('delivery_outbox_channel_created_idx').on(table.channelId, table.createdAt),
+  index('delivery_outbox_event_target_generation_desc_idx').on(table.escalationEventId, table.targetKey, table.generation.desc(), table.createdAt.desc(), table.id),
   check('delivery_outbox_target_source_check', sql`(
     (${table.configSource} = 'DATABASE' and ${table.channelId} is not null and ${table.targetKey} = 'channel:' || ${table.channelId})
     or (${table.configSource} = 'LEGACY_ENV' and ${table.channelId} is null and ${table.targetKey} = 'legacy:central-pushover' and ${table.channelType} = 'PUSHOVER')

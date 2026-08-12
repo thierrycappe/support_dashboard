@@ -21,7 +21,7 @@ export default function EscalationTable({ rows, nextHref, hasFilters }: { rows: 
         )}
         columns={[
           { key: 'title', header: 'Escalation', render: (row) => <div className="queue-ticket"><Link href={`/feedback/${row.id}` as Route}>{row.title}</Link><span>{row.ownerApproval}</span></div> },
-          { key: 'appName', header: 'Application', render: (row) => <div className="queue-application"><span>{row.appName}</span>{row.sourceUrl ? <a href={row.sourceUrl} target="_blank" rel="noreferrer">Open source ticket</a> : <span className="subtle">Source link unavailable</span>}</div> },
+          { key: 'appName', header: 'Application', render: (row) => <div className="queue-application"><span>{row.appName}</span>{row.sourceUrl ? <a href={row.sourceUrl} target="_blank" rel="noopener noreferrer" aria-label={`Open source ticket for ${row.title}`}>Open source ticket</a> : <span className="subtle">Source link unavailable</span>}</div> },
           { key: 'kind', header: 'Classification', render: (row) => kindLabel(row.kind) },
           { key: 'priority', header: 'Priority', render: (row) => <Badge tone={row.priority === 'URGENT' ? 'warning' : 'neutral'}>{titleCase(row.priority)}</Badge> },
           { key: 'status', header: 'Status', render: (row) => visibleStatusLabel(row.status) },

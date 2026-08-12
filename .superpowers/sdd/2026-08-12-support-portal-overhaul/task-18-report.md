@@ -104,3 +104,37 @@ Browser verification was intentionally deferred to root as requested.
 - Summary counts are UTC-day based because durable timestamps are UTC. If the
   product later requires an operator-local day, that needs an explicit trusted
   timezone contract rather than browser-dependent rendering.
+
+## Adversarial Review Fixes
+
+- The queue and its summary now require the exact persisted business-approval
+  triage shape: owner reference, nullable owner name, and a strict UTC
+  escalation timestamp. Null, incomplete, extra-field, and malformed triage
+  snapshots do not become technical work.
+- `New today` now derives from the business escalation timestamp, not the
+  original ticket creation time. The summary's retry count is likewise scoped
+  to approved queue tickets and their current delivery target state.
+- Delivery aggregation first selects the newest escalation event for a ticket,
+  then the latest generation per target inside that event. An older event with
+  a larger outbox generation cannot mask a newer pending target.
+- Source links accept only canonical HTTPS URLs without credentials. Localhost
+  source URLs retain the trusted public-base rewrite, while malformed or
+  unsafe URLs become unavailable. External links now have an explicit title
+  in their accessible name and `noopener noreferrer` isolation.
+- Added immutable migration `0006_escalation_queue_delivery_lookup` and
+  matching Drizzle/catalog contracts for the event and outbox lookup indexes.
+- Queue-specific responsive CSS uses the approved tokens, collapses filters
+  and summary structurally at 640px, and carries an executable CSS contract.
+
+### Fix verification
+
+| Gate | Result |
+|---|---|
+| Focused source-link, queue component, and design-contract tests | 17 tests passed |
+| Live PostgreSQL queue and migration tests | 13 tests passed |
+| `git diff --check` | passed |
+| `npm run lint` / `npm run typecheck` | temporarily blocked by concurrent incomplete Task 19 files outside this fix (`EnrollmentFlow`, `InvitationReveal`, `lib/apps/queries`, and one raw `<a>` lint error) |
+
+The fix intentionally leaves Task 19 work unstaged. Browser verification is
+coordinated at the parent task level because the shared application route is
+being rebuilt concurrently.

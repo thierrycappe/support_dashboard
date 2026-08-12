@@ -14,7 +14,9 @@ describe('escalation queue table', () => {
   it('keeps portal detail primary and labels source and delivery state separately', () => {
     render(<EscalationTable rows={[row]} nextHref="/?cursor=next" hasFilters={false} />)
     expect(screen.getByRole('link', { name: 'Checkout stalls after payment' })).toHaveAttribute('href', '/feedback/ticket-1')
-    expect(screen.getByRole('link', { name: 'Open source ticket' })).toHaveAttribute('href', row.sourceUrl)
+    expect(screen.getByRole('link', { name: 'Open source ticket for Checkout stalls after payment' })).toHaveAttribute('href', row.sourceUrl)
+    expect(screen.getByRole('link', { name: 'Open source ticket for Checkout stalls after payment' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: 'Open source ticket for Checkout stalls after payment' })).toHaveAttribute('rel', 'noopener noreferrer')
     expect(screen.getByText('Retrying')).toBeVisible()
     expect(screen.getByText('Approved by Maya Chen')).toBeVisible()
     expect(screen.getByRole('region', { name: 'Escalations queue' })).toHaveAttribute('tabindex', '0')

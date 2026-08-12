@@ -14,6 +14,15 @@ describe('feedback link helpers', () => {
     ).toBe('https://pitchme.example.com/admin/bugs/bug-1?tab=details')
   })
 
+  it.each([
+    'http://pitchme.example.com/admin/bugs/bug-1',
+    'ftp://pitchme.example.com/admin/bugs/bug-1',
+    'https://operator:secret@pitchme.example.com/admin/bugs/bug-1',
+    'not a URL',
+  ])('drops an unsafe or malformed source ticket URL: %s', (ticketUrl) => {
+    expect(normalizeSourceTicketUrl(ticketUrl, 'https://pitchme.example.com')).toBeNull()
+  })
+
   it('rewrites localhost ticket URLs against the source app public base URL', () => {
     expect(
       normalizeSourceTicketUrl(

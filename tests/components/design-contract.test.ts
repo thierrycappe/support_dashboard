@@ -33,6 +33,13 @@ describe('design accessibility contract', () => {
     expect(css).toMatch(/\[aria-invalid='true'\]\s*\{\s*border-color:\s*var\(--danger\)/)
     expect(css).toMatch(/\[aria-invalid='true'\]:focus-visible\s*\{\s*outline-color:\s*var\(--danger\)/)
   })
+
+  it('keeps the escalation queue compact on desktop and structurally usable on narrow screens', () => {
+    expect(css).toMatch(/\.summary-ledger\s*\{[\s\S]*?gap:\s*var\(--space-2\)/)
+    expect(css).toMatch(/\.queue-filters\s*\{[\s\S]*?gap:\s*var\(--space-3\)/)
+    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.queue-filters\s*\{[\s\S]*?grid-template-columns:\s*1fr/)
+    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.queue-heading\s*\{[\s\S]*?align-items:\s*flex-start/)
+  })
 })
 
 function parseThemeTokens(stylesheet: string, selector: string): ThemeTokens {

@@ -54,12 +54,23 @@ export async function getEscalationQueue({
   if (input.limit !== 50) throw new Error('Escalation queue page size must be 50')
   const pageSize = 50
   const cursor = input.cursor ? decodeEscalationCursor(input.cursor) : null
-  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   const escapedSearch = input.search ? `%${escapeLike(input.search)}%` : null
   const selectedStatuses = input.status ? [input.status] : OPEN_STATUSES
   const selectedStatusSql = sql.join(selectedStatuses.map((status) => sql`${status}::"FeedbackStatus"`), sql`, `)
   const openStatusSql = sql.join(OPEN_STATUSES.map((status) => sql`${status}::"FeedbackStatus"`), sql`, `)
-  const rowResult = await db.execute<QueueDbRow>(sql`
+  const currentDay = now.toISOString().slice(0, 10)
+  const approvedTriageSql = sql`
+    ticket.triage is not null
+    and jsonb_typeof(ticket.triage) = 'object'
+    and ticket.triage ?& array['ownerRef', 'ownerName', 'escalatedAt']
+    and ticket.triage - 'ownerRef' - 'ownerName' - 'escalatedAt' = '{}'::jsonb
+    and jsonb_typeof(ticket.triage->'ownerRef') = 'string'
+    and char_length(btrim(ticket.triage->>'ownerRef')) between 1 and 200
+    and (ticket.triage->'ownerName' = 'null'::jsonb or (jsonb_typeof(ticket.triage->'ownerName') = 'string' and char_length(ticket.triage->>'ownerName') <= 200))
+    and jsonb_typeof(ticket.triage->'escalatedAt') = 'string'
+    and ticket.triage->>'escalatedAt' ~ '^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d{1,9})?Z$'
+  `
+  const rowQuery = db.execute<QueueDbRow>(sql`
     select ticket.id, ticket.title, ticket.source_app_id as "appId", app.name as "appName",
            app.base_url as "appBaseUrl", app.slug as "appSlug",
            ticket.kind, ticket.priority, ticket.status, ticket.updated_at as "updatedAt", ticket.url as "sourceUrl",
@@ -69,16 +80,26 @@ export async function getEscalationQueue({
       join source_apps app on app.id = ticket.source_app_id
       left join lateral (
         select case
-          when bool_or(outbox.status = 'FAILED') then 'FAILED'
-          when bool_or(outbox.status = 'RETRYING') then 'RETRYING'
-          when bool_or(outbox.status in ('PENDING', 'LEASED')) then 'PENDING'
-          when bool_or(outbox.status = 'SENT') then 'SENT'
+          when bool_or(latest_delivery.status = 'FAILED') then 'FAILED'
+          when bool_or(latest_delivery.status = 'RETRYING') then 'RETRYING'
+          when bool_or(latest_delivery.status in ('PENDING', 'LEASED')) then 'PENDING'
+          when bool_or(latest_delivery.status = 'SENT') then 'SENT'
           else null end as status
-          from escalation_events event
-          join delivery_outbox outbox on outbox.escalation_event_id = event.id
-         where event.ticket_id = ticket.id
+          from (
+            select distinct on (outbox.target_key) outbox.status
+              from escalation_events event
+              join delivery_outbox outbox on outbox.escalation_event_id = event.id
+             where event.ticket_id = ticket.id
+               and event.generation = (
+                 select max(newest_event.generation)
+                   from escalation_events newest_event
+                  where newest_event.ticket_id = ticket.id
+               )
+             order by outbox.target_key, outbox.generation desc, outbox.created_at desc, outbox.id desc
+          ) latest_delivery
       ) delivery on true
      where ticket.status in (${selectedStatusSql})
+       and ${approvedTriageSql}
        and (${input.appId ?? null}::text is null or ticket.source_app_id = ${input.appId ?? null})
        and (${input.priority ?? null}::text is null or ticket.priority = ${input.priority ?? null}::"FeedbackPriority")
        and (${escapedSearch}::text is null or ticket.title ilike ${escapedSearch} escape '\\' or ticket.external_id ilike ${escapedSearch} escape '\\')
@@ -86,13 +107,32 @@ export async function getEscalationQueue({
      order by ticket.updated_at desc, ticket.id desc
      limit ${pageSize + 1}
   `)
-  const summaryResult = await db.execute<{ open: number; urgent: number; newToday: number; retrying: number } & Record<string, unknown>>(sql`
+  const summaryQuery = db.execute<{ open: number; urgent: number; newToday: number; retrying: number } & Record<string, unknown>>(sql`
+    with approved_tickets as (
+      select ticket.*
+        from feedback_tickets ticket
+       where ${approvedTriageSql}
+    )
     select count(*) filter (where ticket.status in (${openStatusSql}))::int as open,
            count(*) filter (where ticket.status in (${openStatusSql}) and ticket.priority = 'URGENT')::int as urgent,
-           count(*) filter (where ticket.created_at >= ${startOfDay} and ticket.created_at <= ${now})::int as "newToday",
-           (select count(*)::int from delivery_outbox where status = 'RETRYING') as retrying
-      from feedback_tickets ticket
+           count(*) filter (where left(ticket.triage->>'escalatedAt', 10) = ${currentDay})::int as "newToday",
+           (select count(*)::int
+              from (
+                select distinct on (event.ticket_id, outbox.target_key) outbox.status
+                  from escalation_events event
+                  join delivery_outbox outbox on outbox.escalation_event_id = event.id
+                  join approved_tickets retry_ticket on retry_ticket.id = event.ticket_id
+                 where event.generation = (
+                   select max(newest_event.generation)
+                     from escalation_events newest_event
+                    where newest_event.ticket_id = event.ticket_id
+                 )
+                 order by event.ticket_id, outbox.target_key, outbox.generation desc, outbox.created_at desc, outbox.id desc
+              ) latest_delivery
+             where latest_delivery.status = 'RETRYING') as retrying
+      from approved_tickets ticket
   `)
+  const [rowResult, summaryResult] = await Promise.all([rowQuery, summaryQuery])
   const hasMore = rowResult.rows.length > pageSize
   const rows = rowResult.rows.slice(0, pageSize).map((row): EscalationQueueRow => ({
     id: row.id, title: row.title, appId: row.appId, appName: row.appName, kind: row.kind,

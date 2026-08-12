@@ -52,6 +52,7 @@ beforeAll(async () => {
     '0003_audit_events_append_only',
     '0004_audit_events_reject_truncate',
     '0005_service_rate_limit_bucket_retention',
+    '0006_escalation_queue_delivery_lookup',
   ].map(async (name) => ({
     name,
     sqlText: await readFile(new URL(`../../drizzle/${name}.sql`, import.meta.url), 'utf8'),
@@ -99,8 +100,8 @@ it('rejects changed SQL under an applied migration name', async () => {
 })
 
 it('upgrades the exact current schema without changing legacy rows or named objects', async () => {
-  expect(await applySupportMigrations()).toEqual(['applied', 'applied', 'applied', 'applied', 'applied'])
-  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied', 'already-applied', 'already-applied', 'already-applied'])
+  expect(await applySupportMigrations()).toEqual(['applied', 'applied', 'applied', 'applied', 'applied', 'applied'])
+  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied', 'already-applied', 'already-applied', 'already-applied', 'already-applied'])
 
   const legacyRows = await rehearsalPool.query<{ table_name: string; count: number }>(`
     select 'source_apps' as table_name, count(*)::int as count from source_apps union all
@@ -164,6 +165,7 @@ it('upgrades the exact current schema without changing legacy rows or named obje
     'password_reset_tokens_user_created_idx', 'password_reset_tokens_expires_idx',
     'app_credentials_thumbprint_idx', 'app_credentials_app_status_idx', 'delivery_outbox_claim_idx',
     'delivery_outbox_event_target_generation_idx', 'escalation_events_ticket_generation_idx',
+    'delivery_outbox_event_target_generation_desc_idx', 'escalation_events_ticket_generation_desc_idx',
     'service_assertion_replays_expires_idx', 'service_rate_limit_buckets_window_start_idx',
     'support_groups_one_central_fallback_idx',
   ])
@@ -498,7 +500,12 @@ function expectedIndexDefinition(
   columns: string,
   predicate: string | null,
 ): string {
-  return `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${name} ON ${table} USING btree (${columns})${predicate ? ` WHERE ${predicate}` : ''}`
+  const orderedColumns = name === 'escalation_events_ticket_generation_desc_idx'
+    ? 'ticket_id,generation DESC,id'
+    : name === 'delivery_outbox_event_target_generation_desc_idx'
+      ? 'escalation_event_id,target_key,generation DESC,created_at DESC,id'
+      : columns
+  return `CREATE ${unique ? 'UNIQUE ' : ''}INDEX ${name} ON ${table} USING btree (${orderedColumns})${predicate ? ` WHERE ${predicate}` : ''}`
 }
 
 function normalizeIndexDefinition(index: ContractIndex): ContractIndex {
