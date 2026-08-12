@@ -186,8 +186,11 @@ before paint. System leaves the attribute absent and CSS follows
   `aria-current="page"`. Keyboard focus always uses the shared focus ring.
 - At `960px`, navigation becomes a horizontal top region. It may scroll at
   narrow widths and remains keyboard reachable. Route changes center the active
-  destination with reduced-motion-aware scrolling; explicit previous and next
-  scroll controls make overflow visible without a decorative edge fade.
+  destination with reduced-motion-aware scrolling. When measured content
+  overflows, explicit 44px previous and next controls make that condition
+  visible without a decorative edge fade; each direction is natively disabled
+  at its boundary. Both controls disappear and the navigation reclaims their
+  columns when the measured content fits.
 
 ### Buttons
 

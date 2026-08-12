@@ -3,46 +3,62 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 type Oklch = readonly [lightness: number, chroma: number, hue: number]
+type ThemeTokens = Record<'background' | 'surface' | 'surface-subtle' | 'border' | 'border-strong' | 'focus', Oklch>
 
-const themes = {
-  light: {
-    background: [0.975, 0.006, 248],
-    surface: [0.995, 0.004, 248],
-    surfaceSubtle: [0.95, 0.01, 248],
-    border: [0.58, 0.025, 248],
-    borderStrong: [0.54, 0.035, 248],
-    focus: [0.58, 0.13, 252],
-  },
-  dark: {
-    background: [0.17, 0.012, 248],
-    surface: [0.21, 0.014, 248],
-    surfaceSubtle: [0.255, 0.018, 248],
-    border: [0.55, 0.035, 248],
-    borderStrong: [0.61, 0.04, 248],
-    focus: [0.65, 0.13, 252],
-  },
-} satisfies Record<string, Record<string, Oklch>>
+const css = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8')
 
 describe('design accessibility contract', () => {
-  it.each(Object.entries(themes))('%s boundaries and focus rings maintain 3:1 contrast on adjacent surfaces', (_name, tokens) => {
-    for (const boundary of [tokens.border, tokens.borderStrong, tokens.focus]) {
-      for (const adjacent of [tokens.background, tokens.surface, tokens.surfaceSubtle]) {
-        expect(contrast(boundary, adjacent)).toBeGreaterThanOrEqual(3)
-      }
-    }
+  it.each([
+    ['light', ':root'],
+    ['dark', ":root[data-theme='dark']"],
+  ] as const)('%s shipped boundaries and focus rings maintain 3:1 contrast on adjacent surfaces', (_name, selector) => {
+    expect(minimumBoundaryContrast(parseThemeTokens(css, selector))).toBeGreaterThanOrEqual(3)
   })
 
-  it('gives mobile navigation links and theme choices 44px targets', () => {
-    const css = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8')
+  it('fails the contrast contract when a shipped boundary token regresses', () => {
+    const mutatedCss = css.replace(
+      /(:root\s*\{[\s\S]*?--border:\s*)oklch\([^)]+\)/,
+      '$1oklch(0.855 0.014 248)',
+    )
+    expect(minimumBoundaryContrast(parseThemeTokens(mutatedCss, ':root'))).toBeLessThan(3)
+  })
+
+  it('gives mobile navigation links, theme choices, and scroll controls 44px targets', () => {
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.nav-link,\s*\.theme-option\s*\{\s*min-height:\s*44px/)
+    expect(css).toMatch(/@media \(max-width: 960px\)[\s\S]*?\.nav-rail\[data-overflow='true'\][\s\S]*?grid-template-columns:\s*44px minmax\(0, 1fr\) 44px/)
+    expect(css).toMatch(/\.nav-scroll-control\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px/)
   })
 
   it('uses danger boundaries and focus rings for invalid controls', () => {
-    const css = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8')
     expect(css).toMatch(/\[aria-invalid='true'\]\s*\{\s*border-color:\s*var\(--danger\)/)
     expect(css).toMatch(/\[aria-invalid='true'\]:focus-visible\s*\{\s*outline-color:\s*var\(--danger\)/)
   })
 })
+
+function parseThemeTokens(stylesheet: string, selector: string): ThemeTokens {
+  const selectorPattern = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = stylesheet.match(new RegExp(`${selectorPattern}\\s*\\{([^}]*)\\}`))?.[1]
+  if (!block) throw new Error(`Missing CSS block: ${selector}`)
+  return Object.fromEntries(
+    ['background', 'surface', 'surface-subtle', 'border', 'border-strong', 'focus'].map((token) => {
+      const value = block.match(new RegExp(`--${token}:\\s*oklch\\(([^)]+)\\)`))?.[1]
+      if (!value) throw new Error(`Missing OKLCH token: --${token}`)
+      const channels = value.trim().split(/\s+/).map(Number)
+      if (channels.length !== 3 || channels.some((channel) => !Number.isFinite(channel))) {
+        throw new Error(`Invalid OKLCH token: --${token}`)
+      }
+      return [token, channels as unknown as Oklch]
+    }),
+  ) as ThemeTokens
+}
+
+function minimumBoundaryContrast(tokens: ThemeTokens): number {
+  return Math.min(
+    ...[tokens.border, tokens['border-strong'], tokens.focus].flatMap((boundary) =>
+      [tokens.background, tokens.surface, tokens['surface-subtle']].map((adjacent) => contrast(boundary, adjacent)),
+    ),
+  )
+}
 
 function contrast(left: Oklch, right: Oklch): number {
   const leftLuminance = relativeLuminance(left)

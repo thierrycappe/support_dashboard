@@ -245,12 +245,22 @@ pre {
 
 .nav-scroll-control {
   display: none;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--foreground);
   font-size: var(--text-lg);
   cursor: pointer;
+}
+
+.nav-scroll-control:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
 }
 
 .nav-link {
@@ -1062,8 +1072,11 @@ pre {
   .nav-rail {
     grid-column: 2;
     min-width: 0;
+  }
+
+  .nav-rail[data-overflow='true'] {
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
     gap: var(--space-1);
   }
 
