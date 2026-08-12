@@ -11,3 +11,4 @@ tsconfig.tsbuildinfo
 .env.*.local
 !.env.example
 .worktrees/
+playwright/.auth/

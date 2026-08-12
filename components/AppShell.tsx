@@ -35,7 +35,7 @@ export default async function AppShell({ children }: { children: React.ReactNode
           </form>
         </div>
       </aside>
-      <main className="content" id="main-content">{children}</main>
+      <main className="content" id="main-content" tabIndex={-1}>{children}</main>
     </div>
   )
 }
