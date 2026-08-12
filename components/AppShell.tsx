@@ -1,52 +1,37 @@
-import Link from 'next/link'
-import type { Route } from 'next'
-import { ChartNoAxesColumnIncreasing, Inbox, LayoutDashboard, RadioTower, Users } from 'lucide-react'
+import { cookies } from 'next/headers'
 import { logoutAction } from '@/app/login/actions'
 import { auth } from '@/auth'
-
-const USERS_ROUTE = '/users' as Route
-const ACTIVITY_KPIS_ROUTE = '/activity-kpis' as Route
+import NavLinks from '@/components/NavLinks'
+import ThemeToggle from '@/components/ThemeToggle'
+import { normalizeTheme } from '@/components/theme'
 
 export default async function AppShell({ children }: { children: React.ReactNode }) {
-  const session = await auth()
+  const [session, cookieStore] = await Promise.all([auth(), cookies()])
   const isAdmin = session?.user?.role === 'ADMIN'
+  const theme = normalizeTheme(cookieStore.get('support-theme')?.value)
+  const identity = session?.user?.name ?? session?.user?.email ?? (isAdmin ? 'Administrator' : 'Support operator')
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">
-            <RadioTower size={18} aria-hidden="true" />
-          </span>
+      <a className="skip-link" href="#main-content">Skip to content</a>
+      <aside className="sidebar" aria-label="Support Tower">
+        <div className="brand" aria-label="Support Tower home">
+          <span className="brand-mark" aria-hidden="true">ST</span>
           <span>Support Tower</span>
         </div>
-        <nav className="nav-list" aria-label="Main navigation">
-          <Link className="nav-link" href="/">
-            <LayoutDashboard size={18} aria-hidden="true" />
-            Dashboard
-          </Link>
-          <Link className="nav-link" href="/apps">
-            <Inbox size={18} aria-hidden="true" />
-            Source apps
-          </Link>
-          <Link className="nav-link" href={ACTIVITY_KPIS_ROUTE}>
-            <ChartNoAxesColumnIncreasing size={18} aria-hidden="true" />
-            Activity KPIs
-          </Link>
-          {isAdmin && (
-            <Link className="nav-link" href={USERS_ROUTE}>
-              <Users size={18} aria-hidden="true" />
-              Users
-            </Link>
-          )}
-        </nav>
-        <form action={logoutAction} style={{ marginTop: 24 }}>
-          <button className="button button-secondary" type="submit">
-            Sign out
-          </button>
-        </form>
+        <NavLinks isAdmin={isAdmin} />
+        <div className="shell-utilities">
+          <ThemeToggle initialTheme={theme} />
+          <div className="operator-identity">
+            <span>{identity}</span>
+            <span className="operator-role">{isAdmin ? 'Admin' : 'Support'}</span>
+          </div>
+          <form action={logoutAction}>
+            <button className="button button-secondary shell-signout" type="submit">Sign out</button>
+          </form>
+        </div>
       </aside>
-      <main className="content">{children}</main>
+      <main className="content" id="main-content">{children}</main>
     </div>
   )
 }
