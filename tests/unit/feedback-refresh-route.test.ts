@@ -47,4 +47,19 @@ describe('feedback source refresh route', () => {
 
     await expect(response.json()).resolves.toEqual({ ok: true, changed: false, ticketId: 'ticket-1' })
   })
+
+  it.each([
+    ['no tickets', []],
+    ['multiple tickets', [{ app: { slug: 'atlas' }, ticket: { externalId: 'ATLAS-42' } }, { app: { slug: 'atlas' }, ticket: { externalId: 'ATLAS-43' } }]],
+    ['wrong external ID', [{ app: { slug: 'atlas' }, ticket: { externalId: 'ATLAS-99' } }]],
+  ])('rejects a targeted refresh returning %s', async (_label, tickets) => {
+    mocks.getSourceAppPullConfig.mockReturnValue({ url: 'https://atlas.test/export', token: 'secret' })
+    mocks.fetchTicketsFromSource.mockResolvedValue(tickets)
+
+    const response = await POST(new Request('https://tower.test/api/feedback/ticket-1/refresh', { method: 'POST' }), { params: Promise.resolve({ id: 'ticket-1' }) })
+
+    expect(response.status).toBe(502)
+    await expect(response.json()).resolves.toEqual({ error: refreshFailure })
+    expect(mocks.acceptLegacyPayload).not.toHaveBeenCalled()
+  })
 })

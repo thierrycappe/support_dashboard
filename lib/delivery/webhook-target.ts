@@ -86,6 +86,8 @@ function isUnsafeIpv6(address: string): boolean {
     || (first === 0x2001 && (second === 0x0db8 || second === 0x0002 || second === 0x0010))
     || first === 0x0100
     || first === 0x2002
+    || (first & 0xfff0) === 0x3ff0
+    || first === 0x5f00
     || (first === 0x0064 && second === 0xff9b)
 }
 

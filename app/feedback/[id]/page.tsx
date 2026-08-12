@@ -22,7 +22,15 @@ export default async function FeedbackDetailPage({ params }: { params: Promise<{
 
   return (
     <AppShell>
-      <EscalationDetailContent detail={{ ...detail, pullConfigured: Boolean(getSourceAppPullConfig(detail.application.slug)) }} />
+      <EscalationDetailContent detail={{ ...detail, pullConfigured: isPullConfigured(detail.application.slug) }} />
     </AppShell>
   )
+}
+
+function isPullConfigured(appSlug: string): boolean {
+  try {
+    return Boolean(getSourceAppPullConfig(appSlug))
+  } catch {
+    return false
+  }
 }

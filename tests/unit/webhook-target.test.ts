@@ -17,6 +17,9 @@ describe('validateWebhookTarget', () => {
     'https://[::ffff:127.0.0.1]/hook',
     'https://[fc00::1]/hook',
     'https://[2001:db8::1]/hook',
+    'https://[3fff::1]/hook',
+    'https://[3fff:0fff::1]/hook',
+    'https://[5f00::1]/hook',
   ])('rejects direct or encoded unsafe webhook target %s', async (url) => {
     await expect(validateWebhookTarget(url)).rejects.toThrow('Unsafe webhook target')
   })

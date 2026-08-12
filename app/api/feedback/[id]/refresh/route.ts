@@ -50,7 +50,9 @@ export async function POST(
       externalId: row.externalId,
     })
     const payload = tickets[0]
-    if (!payload || payload.app.slug !== row.appSlug) return NextResponse.json({ error: REFRESH_FAILURE_MESSAGE }, { status: 502 })
+    if (tickets.length !== 1 || !payload || payload.app.slug !== row.appSlug || payload.ticket.externalId !== row.externalId) {
+      return NextResponse.json({ error: REFRESH_FAILURE_MESSAGE }, { status: 502 })
+    }
     const accepted = await acceptLegacyPayload({ payload, authoritativeAppSlug: row.appSlug })
     const result = legacyResult(accepted)
     return NextResponse.json({ ok: true, changed: accepted.result !== 'duplicate', ticketId: result.ticketId })
