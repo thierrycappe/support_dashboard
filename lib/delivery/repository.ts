@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
+import { appendAuditEvent, type AuditMutationContext } from '@/lib/audit/events'
 import { getDb, type Db } from '@/lib/db'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
 import type { DeliveryChannelType } from '@/lib/delivery/types'
@@ -35,6 +36,89 @@ export interface DatabaseDeliveryChannel {
   configNonce: string
   configAuthTag: string
   keyVersion: number
+}
+
+export interface RetriedDelivery {
+  id: string
+  generation: number
+  status: 'PENDING'
+}
+
+export async function retryFailedDelivery({
+  db = getDb(),
+  id,
+  actorId,
+  correlationId,
+  reason,
+  now = new Date(),
+}: AuditMutationContext & {
+  db?: Db
+  id: string
+  now?: Date
+}): Promise<RetriedDelivery> {
+  return db.transaction(async (tx) => {
+    const sourceResult = await tx.execute<{
+      id: string
+      escalationEventId: string
+      eventKey: string
+      targetKey: string
+      generation: number
+      channelId: string | null
+      channelType: DeliveryChannelType
+      configSource: 'DATABASE' | 'LEGACY_ENV'
+      renderedPayload: Record<string, unknown>
+      status: string
+    }>(sql`
+      select id, escalation_event_id as "escalationEventId", event_key as "eventKey", target_key as "targetKey",
+        generation, channel_id as "channelId", channel_type::text as "channelType", config_source as "configSource",
+        rendered_payload as "renderedPayload", status::text as status
+        from delivery_outbox
+       where id = ${id}
+       for update
+    `)
+    const source = sourceResult.rows[0]
+    if (!source) throw new Error('Delivery not found')
+    if (source.status !== 'FAILED') throw new Error('Only failed deliveries can be retried')
+
+    const nextGeneration = source.generation + 1
+    const newId = nanoid()
+    const inserted = await tx.execute<RetriedDelivery & Record<string, unknown>>(sql`
+      insert into delivery_outbox (
+        id, escalation_event_id, event_key, target_key, generation, channel_id, channel_type, config_source,
+        rendered_payload, status, next_attempt_at, attempt_count, created_at, updated_at
+      ) values (
+        ${newId}, ${source.escalationEventId}, ${source.eventKey}, ${source.targetKey}, ${nextGeneration},
+        ${source.channelId}, ${source.channelType}::"ChannelType", ${source.configSource},
+        ${JSON.stringify(source.renderedPayload)}::jsonb, 'PENDING'::"DeliveryStatus", ${now}, 0, ${now}, ${now}
+      ) on conflict (event_key, target_key, generation) do nothing
+      returning id, generation, status::text as status
+    `)
+    const created = inserted.rows[0]
+    if (created) {
+      await appendAuditEvent({
+        db: tx,
+        actorId,
+        correlationId,
+        reason,
+        action: 'DELIVERY_REQUEUED',
+        subjectType: 'delivery_outbox',
+        subjectId: created.id,
+        metadata: { previousDeliveryId: source.id, generation: created.generation, target: source.targetKey },
+        now,
+      })
+      return { ...created, status: 'PENDING' }
+    }
+
+    const existing = await tx.execute<RetriedDelivery & Record<string, unknown>>(sql`
+      select id, generation, status::text as status
+        from delivery_outbox
+       where event_key = ${source.eventKey} and target_key = ${source.targetKey} and generation = ${nextGeneration}
+       limit 1
+    `)
+    const retried = existing.rows[0]
+    if (!retried) throw new Error('Delivery retry was not queued')
+    return { ...retried, status: 'PENDING' }
+  })
 }
 
 export async function claimLegacyDeliveries({
