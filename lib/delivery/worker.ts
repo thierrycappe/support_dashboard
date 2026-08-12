@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { sendPushoverDelivery } from '@/lib/delivery/adapters/pushover'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
 import {
@@ -32,7 +33,7 @@ export async function runDeliverySweep({
   db = getDb(),
   limit = 100,
   now = new Date(),
-  workerId = 'delivery-worker',
+  workerId = randomUUID(),
   legacyConfig = defaultLegacyConfig(),
   send = sendPushoverDelivery,
   concurrency = 20,
@@ -49,8 +50,11 @@ export async function runDeliverySweep({
   leaseDurationMs?: number
   leaseRenewalMs?: number
 } = {}): Promise<DeliverySweepResult> {
+  const activeConcurrency = Math.max(1, Math.floor(concurrency))
   const configurationNotReady = await recordConfigurationNotReady({ db, now, limit })
-  const claimed = await claimLegacyDeliveries({ db, limit, now, workerId, leaseDurationMs })
+  // Claim only work we can start now. Queued claimed rows would otherwise
+  // consume their lease while waiting behind a slow provider.
+  const claimed = await claimLegacyDeliveries({ db, limit: Math.min(limit, activeConcurrency), now, workerId, leaseDurationMs })
   const result: DeliverySweepResult = {
     claimed: claimed.length,
     started: 0,
@@ -60,7 +64,7 @@ export async function runDeliverySweep({
     configurationNotReady,
   }
 
-  await runWithConcurrency(claimed, concurrency, async (job) => {
+  await runWithConcurrency(claimed, activeConcurrency, async (job) => {
     if (!legacyConfig) {
       await releaseLegacyConfigurationNotReady({ db, id: job.id, workerId, now })
       result.configurationNotReady += 1
@@ -70,12 +74,14 @@ export async function runDeliverySweep({
     result.started += 1
     const stopRenewal = beginLeaseRenewal({ db, id: job.id, workerId, leaseDurationMs, leaseRenewalMs })
     try {
+      const startedAt = new Date()
       const outcome = await send({
         event: job.renderedPayload as unknown as DeliveryEvent,
         config: legacyConfig,
         idempotencyKey: job.eventKey,
       })
-      const finalized = await finishDelivery({ db, id: job.id, workerId, now, result: outcome })
+      const finishedAt = new Date()
+      const finalized = await finishDelivery({ db, id: job.id, workerId, startedAt, finishedAt, result: outcome })
       if (!finalized) return
       if (outcome.result === 'sent') result.sent += 1
       else if (outcome.result === 'permanent') result.failed += 1

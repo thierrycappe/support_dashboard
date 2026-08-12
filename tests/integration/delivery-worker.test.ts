@@ -48,10 +48,11 @@ describe('runDeliverySweep', () => {
     })
 
     const row = await outbox('job-retry')
+    const timing = await attemptTiming('job-retry')
     expect(row.status).toBe('RETRYING')
     expect(row.attemptCount).toBe(1)
-    expect(asDate(row.nextAttemptAt).getTime()).toBeGreaterThanOrEqual(now.getTime() + 54_000)
-    expect(asDate(row.nextAttemptAt).getTime()).toBeLessThanOrEqual(now.getTime() + 66_000)
+    expect(asDate(row.nextAttemptAt).getTime()).toBeGreaterThanOrEqual(asDate(timing.finishedAt).getTime() + 54_000)
+    expect(asDate(row.nextAttemptAt).getTime()).toBeLessThanOrEqual(asDate(timing.finishedAt).getTime() + 66_000)
     expect(await attempt('job-retry')).toMatchObject({ resultClass: 'retryable', sanitizedError: 'NETWORK_ERROR' })
   })
 
@@ -63,7 +64,8 @@ describe('runDeliverySweep', () => {
       send: async () => ({ result: 'retryable', providerStatus: 429, providerMessageId: null, retryAfterMs: 2 * 60 * 60_000, sanitizedError: 'HTTP_429' }),
     })
 
-    expect(asDate((await outbox('job-rate-limit')).nextAttemptAt)).toEqual(new Date(now.getTime() + 60 * 60_000))
+    const timing = await attemptTiming('job-rate-limit')
+    expect(asDate((await outbox('job-rate-limit')).nextAttemptAt)).toEqual(new Date(asDate(timing.finishedAt).getTime() + 60 * 60_000))
   })
 
   it('records permanent responses as failed and records provider metadata for sent jobs', async () => {
@@ -146,6 +148,76 @@ describe('runDeliverySweep', () => {
     expect((await outbox('job-slow-lease')).status).toBe('SENT')
   })
 
+  it('does not lease queued jobs beyond active concurrency while another worker overlaps', async () => {
+    for (let index = 0; index < 4; index += 1) await seedOutbox(`job-queued-${index}`, { generation: index + 1 })
+    const initialDispatches = deferred<void>()
+    let activeDispatches = 0
+    const sends = new Map<string, number>()
+    const send = async ({ idempotencyKey }: { idempotencyKey: string }): Promise<DeliveryAdapterResult> => {
+      sends.set(idempotencyKey, (sends.get(idempotencyKey) ?? 0) + 1)
+      activeDispatches += 1
+      if (activeDispatches === 2) initialDispatches.resolve()
+      await sleep(120)
+      return sent()
+    }
+
+    const first = runDeliverySweep({
+      db: getDb(), limit: 4, now: new Date(), workerId: 'first-worker', legacyConfig: legacyConfig(),
+      concurrency: 2, leaseDurationMs: 50, leaseRenewalMs: 10, send,
+    })
+    await initialDispatches.promise
+    await sleep(70)
+    const second = runDeliverySweep({
+      db: getDb(), limit: 4, now: new Date(), workerId: 'second-worker', legacyConfig: legacyConfig(),
+      concurrency: 2, leaseDurationMs: 50, leaseRenewalMs: 10, send,
+    })
+    const [firstResult, secondResult] = await Promise.all([first, second])
+
+    expect(firstResult.claimed).toBe(2)
+    expect(secondResult.claimed).toBe(2)
+    expect([...sends.values()]).toEqual([1, 1, 1, 1])
+    expect(await scalar(sql`select count(*)::int as count from delivery_attempts`)).toBe(4)
+  })
+
+  it('uses a unique lease owner for each default worker invocation', async () => {
+    await seedOutbox('job-default-worker-a')
+    await seedOutbox('job-default-worker-b')
+    const bothStarted = deferred<void>()
+    const release = deferred<void>()
+    let dispatches = 0
+    const send = async (): Promise<DeliveryAdapterResult> => {
+      dispatches += 1
+      if (dispatches === 2) bothStarted.resolve()
+      await release.promise
+      return sent()
+    }
+    const first = runDeliverySweep({ db: getDb(), limit: 1, now: new Date(), legacyConfig: legacyConfig(), send })
+    const second = runDeliverySweep({ db: getDb(), limit: 1, now: new Date(), legacyConfig: legacyConfig(), send })
+
+    await bothStarted.promise
+    expect(await scalar(sql`select count(distinct lease_token)::int as count from delivery_outbox where status = 'LEASED'`)).toBe(2)
+    release.resolve()
+    await Promise.all([first, second])
+  })
+
+  it('persists actual ordered provider dispatch timestamps instead of the sweep clock', async () => {
+    await seedOutbox('job-real-attempt-time')
+    const sweepNow = new Date(Date.now() - 60_000)
+
+    await runDeliverySweep({
+      db: getDb(), now: sweepNow, workerId: 'timing-worker', legacyConfig: legacyConfig(),
+      send: async () => {
+        await sleep(25)
+        return sent()
+      },
+    })
+
+    const timing = await attemptTiming('job-real-attempt-time')
+    expect(asDate(timing.startedAt).getTime()).toBeGreaterThan(sweepNow.getTime())
+    expect(asDate(timing.finishedAt).getTime()).toBeGreaterThan(asDate(timing.startedAt).getTime())
+    expect(asDate(timing.createdAt)).toEqual(asDate(timing.finishedAt))
+  })
+
   it('begins 500 actual local-provider dispatches inside 60 seconds with bounded concurrency', async () => {
     for (let index = 0; index < 500; index += 1) {
       await seedOutbox(`job-drain-${index}`, { generation: index + 1 })
@@ -162,7 +234,7 @@ describe('runDeliverySweep', () => {
     }) })
     await provider.close()
 
-    expect(result).toEqual({ started: 500, batches: 5 })
+    expect(result).toEqual({ started: 500, batches: 20 })
     expect(provider.startedAt).toHaveLength(500)
     expect(Math.max(...provider.startedAt) - startedAt).toBeLessThan(60_000)
     expect(Math.max(...provider.startedAt) - startedAt).toBeLessThan(2_000)
@@ -231,6 +303,14 @@ async function outbox(id: string): Promise<{ status: string; attemptCount: numbe
 async function attempt(id: string): Promise<Record<string, unknown>> {
   const result = await getDb().execute<Record<string, unknown>>(sql`
     select result_class as "resultClass", provider_status as "providerStatus", provider_message_id as "providerMessageId", sanitized_error as "sanitizedError"
+      from delivery_attempts where outbox_id = ${id}
+  `)
+  return result.rows[0]!
+}
+
+async function attemptTiming(id: string): Promise<{ startedAt: Date; finishedAt: Date; createdAt: Date }> {
+  const result = await getDb().execute<{ startedAt: Date; finishedAt: Date; createdAt: Date }>(sql`
+    select started_at as "startedAt", finished_at as "finishedAt", created_at as "createdAt"
       from delivery_attempts where outbox_id = ${id}
   `)
   return result.rows[0]!

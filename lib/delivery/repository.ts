@@ -92,13 +92,15 @@ export async function finishDelivery({
   db = getDb(),
   id,
   workerId,
-  now,
+  startedAt,
+  finishedAt,
   result,
 }: {
   db?: Db
   id: string
   workerId: string
-  now: Date
+  startedAt: Date
+  finishedAt: Date
   result: DeliveryAdapterResult
 }): Promise<boolean> {
   return db.transaction(async (tx) => {
@@ -111,20 +113,20 @@ export async function finishDelivery({
          set attempt_count = attempt_count + 1,
              lease_token = null,
              lease_expires_at = null,
-             updated_at = ${now}
+             updated_at = ${finishedAt}
        where id = ${id} and lease_token = ${workerId} and status = 'LEASED'
        returning id, target_key as "targetKey", attempt_count as "attemptCount"
     `)
     const row = leased.rows[0]
     if (!row) return false
 
-    const transition = transitionFor(id, row.attemptCount, now, result)
+    const transition = transitionFor(id, row.attemptCount, finishedAt, result)
     await tx.execute(sql`
       update delivery_outbox
          set status = ${transition.status}::"DeliveryStatus",
              next_attempt_at = ${transition.nextAttemptAt},
-             sent_at = case when ${transition.status} = 'SENT' then ${now} else sent_at end,
-             updated_at = ${now}
+             sent_at = case when ${transition.status} = 'SENT' then ${finishedAt} else sent_at end,
+             updated_at = ${finishedAt}
        where id = ${id}
     `)
     await tx.execute(sql`
@@ -132,9 +134,9 @@ export async function finishDelivery({
         id, outbox_id, ordinal, target_key, started_at, finished_at, result_class,
         provider_status, sanitized_error, provider_message_id, created_at
       ) values (
-        ${nanoid()}, ${id}, ${row.attemptCount}, ${row.targetKey}, ${now}, ${now}, ${result.result},
+        ${nanoid()}, ${id}, ${row.attemptCount}, ${row.targetKey}, ${startedAt}, ${finishedAt}, ${result.result},
         ${result.providerStatus === null ? null : String(result.providerStatus)}, ${result.sanitizedError},
-        ${result.providerMessageId}, ${now}
+        ${result.providerMessageId}, ${finishedAt}
       )
     `)
     return true

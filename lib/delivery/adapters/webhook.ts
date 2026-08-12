@@ -28,7 +28,7 @@ export async function sendWebhookDelivery(input: {
     .update(rawBody)
     .digest('hex')
   try {
-    const response = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, target.url, {
+    const { response } = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, target.url, {
       method: 'POST',
       body: rawBody,
       redirect: 'error',
@@ -39,7 +39,7 @@ export async function sendWebhookDelivery(input: {
         'x-support-timestamp': String(timestamp),
         'x-support-signature': `v1=${signature}`,
       },
-    } as RequestInit, input.timeoutMs)
+    } as RequestInit, async () => '', input.timeoutMs)
     if (!response.ok) return classifiedHttp(response.status, retryAfter(response))
     return {
       result: 'sent',

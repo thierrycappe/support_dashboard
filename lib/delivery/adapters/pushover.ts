@@ -20,15 +20,14 @@ export async function sendPushoverDelivery(input: {
     url: input.event.portalUrl,
   })
   try {
-    const response = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, PUSHOVER_API_URL, {
+    const { response, body: text } = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, PUSHOVER_API_URL, {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
         'idempotency-key': input.idempotencyKey,
       },
       body,
-    }, input.timeoutMs)
-    const text = await response.text()
+    }, (providerResponse) => providerResponse.text(), input.timeoutMs)
     if (!response.ok) return classifiedHttp(response.status, retryAfter(response))
     return {
       result: 'sent',

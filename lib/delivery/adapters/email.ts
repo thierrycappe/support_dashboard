@@ -25,7 +25,7 @@ export async function sendEmailDelivery(input: {
     text: emailText(input.event),
   })
   try {
-    const response = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, RESEND_EMAILS_URL, {
+    const { response, body: text } = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, RESEND_EMAILS_URL, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey}`,
@@ -33,8 +33,7 @@ export async function sendEmailDelivery(input: {
         'idempotency-key': input.idempotencyKey,
       },
       body,
-    }, input.timeoutMs)
-    const text = await response.text()
+    }, (providerResponse) => providerResponse.text(), input.timeoutMs)
     if (!response.ok) return classifiedHttp(response.status, retryAfter(response))
     return {
       result: 'sent',

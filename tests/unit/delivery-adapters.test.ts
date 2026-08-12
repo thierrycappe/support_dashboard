@@ -89,6 +89,23 @@ describe('delivery adapters', () => {
     expect(result).toMatchObject({ result: 'retryable', providerStatus: null, sanitizedError: 'PROVIDER_TIMEOUT' })
   })
 
+  it('times out when Pushover sends headers but its response body never completes', async () => {
+    const result = await sendPushoverDelivery({
+      event,
+      config: { type: 'PUSHOVER', appToken: 'token', userKey: 'user' },
+      idempotencyKey: 'event-1',
+      timeoutMs: 10,
+      fetchImpl: (async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () => new Promise<string>(() => {}),
+      })) as unknown as typeof fetch,
+    })
+
+    expect(result).toMatchObject({ result: 'retryable', providerStatus: null, sanitizedError: 'PROVIDER_TIMEOUT' })
+  })
+
   it('makes unsafe webhook targets permanent and transient DNS failures retryable', async () => {
     const base = {
       event, config: { type: 'WEBHOOK' as const, url: 'https://public.example.test/hook', signingSecret: 'test-secret' }, idempotencyKey: 'event-1',
