@@ -160,3 +160,29 @@ will run the combined shared-worktree gates after Task20 lands.
 - Repository and action paths share URL safety; existing unsafe data is not
   rendered.
 - No Task20, progress-ledger, or generated Next.js changes are included.
+
+## Fix Round 2 — history-safe invitation guard
+
+The invitation guard no longer appends a same-URL history entry. It temporarily
+marks the existing entry with `replaceState`, preserving Next's router state and
+history length. An unacknowledged Back event is stopped before route handling and
+reversed with `history.forward`; the marker-bearing restoration event is
+consumed without another traversal. Acknowledgement, copy, Hide, or unmount
+restores the exact original state. `beforeunload`, sidebar-link protection, and
+unconditional BFCache-safe `pagehide` concealment remain.
+
+RED proved the former implementation called `pushState` and left a duplicate
+entry. GREEN behavior uses the real History API surface to prove: no push, no
+length change, original router state preserved/restored, one Back restoration,
+no restoration loop, and no active listener after acknowledgement.
+
+| Gate | Result |
+|---|---|
+| `npx vitest run tests/components/enrollment-flow.test.tsx --reporter=verbose` | 1 file, 7 tests passed |
+| Complete tracked unit/component inventory | 36 files, 246 tests passed |
+| Scoped ESLint | passed |
+| Scoped `git diff --check` | passed |
+
+Self-review confirmed the guard state contains only an invitation identifier,
+never its secret, and cleanup changes history state only while the current entry
+still owns this invitation's marker. Concurrent Task20 files remain untouched.

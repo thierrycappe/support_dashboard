@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import Link from 'next/link'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import EnrollmentFlow from '@/components/enrollment/EnrollmentFlow'
 import InvitationReveal from '@/components/enrollment/InvitationReveal'
 
@@ -10,6 +10,8 @@ const owners = [
   { id: 'user-1', name: 'Maya Chen', email: 'maya@example.test' },
   { id: 'user-2', name: 'Jonas Berg', email: 'jonas@example.test' },
 ]
+
+afterEach(() => vi.restoreAllMocks())
 
 describe('application enrollment flow', () => {
   it('keeps the approved four-step order and recovers from errors beside the field', () => {
@@ -68,19 +70,37 @@ describe('application enrollment flow', () => {
     await waitFor(() => expect(screen.getByRole('link', { name: 'View application' })).toHaveAttribute('href', '/apps/app-1'))
   })
 
-  it('blocks refresh, browser back, and sidebar links until storage is acknowledged', () => {
+  it('blocks refresh, restores Back without a duplicate entry, and removes the guard after acknowledgement', async () => {
+    window.history.replaceState({ nextRouterState: 'preserved' }, '', '/apps/new')
+    const initialLength = window.history.length
+    const push = vi.spyOn(window.history, 'pushState')
+    const forward = vi.spyOn(window.history, 'forward').mockImplementation(() => undefined)
     render(<><Link href="/apps">Applications</Link><InvitationReveal appId="app-1" invitationId="grant-1" invitationSecret="one-time-secret" expiresAt="2026-08-12T15:30:00.000Z" /></>)
+    expect(push).not.toHaveBeenCalled()
+    expect(window.history.length).toBe(initialLength)
+    const guardedState = window.history.state
+    expect(guardedState).toMatchObject({ nextRouterState: 'preserved' })
     const leaving = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(leaving)
     expect(leaving.defaultPrevented).toBe(true)
     expect(fireEvent.click(screen.getByRole('link', { name: 'Applications' }))).toBe(false)
-    fireEvent.popState(window)
+    const back = new PopStateEvent('popstate', { state: { previousRoute: true } })
+    const stopped = vi.spyOn(back, 'stopImmediatePropagation')
+    fireEvent(window, back)
+    expect(stopped).toHaveBeenCalledOnce()
+    expect(forward).toHaveBeenCalledOnce()
     expect(screen.getByRole('alert')).toHaveTextContent('Store or copy the invitation before leaving this screen.')
     expect(screen.getByText('one-time-secret')).toBeVisible()
+    fireEvent(window, new PopStateEvent('popstate', { state: guardedState }))
+    expect(forward).toHaveBeenCalledOnce()
     fireEvent.click(screen.getByRole('checkbox', { name: /stored this invitation/ }))
+    await waitFor(() => expect(window.history.state).toEqual({ nextRouterState: 'preserved' }))
     const acknowledgedLeaving = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(acknowledgedLeaving)
     expect(acknowledgedLeaving.defaultPrevented).toBe(false)
+    fireEvent(window, new PopStateEvent('popstate', { state: { previousRoute: true } }))
+    expect(forward).toHaveBeenCalledOnce()
+    expect(window.history.length).toBe(initialLength)
   })
 
   it('clears an acknowledged secret on pagehide so browser cache cannot restore it', () => {
