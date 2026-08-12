@@ -20,6 +20,7 @@ import {
 import { IntakeError } from '@/lib/escalations/errors'
 import { resolveTargetsFromDb } from '@/lib/escalations/repository'
 import { getTowerPublicUrl } from '@/lib/notifications/pushover'
+import { scheduleDeliveryWakeup } from '@/lib/delivery/worker'
 
 export interface AcceptEscalationInput {
   appId: string
@@ -76,7 +77,7 @@ export async function acceptEscalation(
   const digest = canonicalEscalationDigest(input.command)
   const acceptedAt = input.receivedAt ?? new Date()
 
-  return dependencies.db.transaction(async (tx) => {
+  const result = await dependencies.db.transaction(async (tx) => {
     const receipt = await claimReceipt(tx, input, digest, acceptedAt)
     if (receipt.kind === 'duplicate') return receipt.result
     if (receipt.kind === 'conflict') throw new IntakeError('IDEMPOTENCY_CONFLICT')
@@ -118,6 +119,8 @@ export async function acceptEscalation(
     await appendAcceptedAudit(tx, input, ticket, acceptedAt)
     return finalizeReceipt(tx, receipt.id, input.appId, ticket, acceptedAt)
   })
+  if (result.result !== 'duplicate') scheduleDeliveryWakeup()
+  return result
 }
 
 async function claimReceipt(

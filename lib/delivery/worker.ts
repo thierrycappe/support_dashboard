@@ -9,6 +9,7 @@ import {
 import type { DeliveryEvent } from '@/lib/delivery/types'
 import { getDb, type Db } from '@/lib/db'
 import { getPushoverConfig } from '@/lib/notifications/pushover'
+import { after } from 'next/server'
 
 export interface DeliverySweepResult {
   claimed: number
@@ -75,4 +76,41 @@ export async function runDeliverySweep({
 function defaultLegacyConfig(): { type: 'PUSHOVER'; appToken: string; userKey: string } | null {
   const config = getPushoverConfig()
   return config ? { type: 'PUSHOVER', ...config } : null
+}
+
+export async function drainImmediateDeliveries({
+  batchSize = 100,
+  maxJobs = 500,
+  maxDurationMs = 45_000,
+  sweep = runDeliverySweep,
+}: {
+  batchSize?: number
+  maxJobs?: number
+  maxDurationMs?: number
+  sweep?: (input: { limit: number }) => Promise<Pick<DeliverySweepResult, 'started'>>
+} = {}): Promise<{ started: number; batches: number }> {
+  const startedAt = Date.now()
+  let started = 0
+  let batches = 0
+  while (started < maxJobs && Date.now() - startedAt < maxDurationMs) {
+    const result = await sweep({ limit: Math.min(batchSize, maxJobs - started) })
+    batches += 1
+    started += result.started
+    if (result.started === 0) break
+  }
+  return { started, batches }
+}
+
+export function scheduleDeliveryWakeup({
+  afterImpl = after,
+  drain = drainImmediateDeliveries,
+}: {
+  afterImpl?: (task: () => Promise<void>) => void
+  drain?: () => Promise<unknown>
+} = {}): void {
+  try {
+    afterImpl(async () => { await drain() })
+  } catch {
+    // Scheduling is post-commit best effort; the cron recovery path remains durable.
+  }
 }

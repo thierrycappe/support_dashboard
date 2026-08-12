@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql, type SQL } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
-import { runDeliverySweep } from '@/lib/delivery/worker'
+import { drainImmediateDeliveries, runDeliverySweep } from '@/lib/delivery/worker'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
 import { requireTestDatabaseUrl } from './helpers/database'
 
@@ -98,6 +98,25 @@ describe('runDeliverySweep', () => {
     expect((await outbox('job-database')).status).toBe('PENDING')
     expect(await attempt('job-database')).toMatchObject({ resultClass: 'CONFIGURATION_NOT_READY' })
   })
+
+  it('begins 500 eligible legacy jobs inside 60 seconds through bounded immediate batches', async () => {
+    for (let index = 0; index < 500; index += 1) {
+      await seedOutbox(`job-drain-${index}`, { generation: index + 1 })
+    }
+    const startedAt = Date.now()
+    const result = await drainImmediateDeliveries({
+      batchSize: 100,
+      maxJobs: 500,
+      maxDurationMs: 45_000,
+      sweep: ({ limit }) => runDeliverySweep({
+        db: getDb(), limit, now, workerId: `drain-${Math.random()}`,
+        legacyConfig: legacyConfig(),
+        send: async () => ({ result: 'sent', providerStatus: 202, providerMessageId: 'local-provider', retryAfterMs: null, sanitizedError: null }),
+      }),
+    })
+    expect(result).toEqual({ started: 500, batches: 5 })
+    expect(Date.now() - startedAt).toBeLessThan(60_000)
+  })
 })
 
 function legacyConfig() {
@@ -134,6 +153,7 @@ async function seedOutbox(id: string, options: {
   configSource?: 'DATABASE' | 'LEGACY_ENV'
   targetKey?: string
   channelId?: string | null
+  generation?: number
 } = {}): Promise<void> {
   const configSource = options.configSource ?? 'LEGACY_ENV'
   const targetKey = options.targetKey ?? 'legacy:central-pushover'
@@ -143,7 +163,7 @@ async function seedOutbox(id: string, options: {
       id, escalation_event_id, event_key, target_key, generation, channel_id, channel_type, config_source,
       rendered_payload, status, next_attempt_at, attempt_count, lease_token, lease_expires_at, created_at, updated_at
     ) values (
-      ${id}, 'worker-event', ${`event-${id}`}, ${targetKey}, 1, ${channelId}, 'PUSHOVER', ${configSource},
+      ${id}, 'worker-event', ${`event-${id}`}, ${targetKey}, ${options.generation ?? 1}, ${channelId}, 'PUSHOVER', ${configSource},
       ${JSON.stringify(event)}::jsonb, ${options.status ?? 'PENDING'}::"DeliveryStatus", ${now}, 0,
       ${options.status === 'LEASED' ? 'stale-worker' : null}, ${options.leaseExpiresAt ?? null}, ${now}, ${now}
     )

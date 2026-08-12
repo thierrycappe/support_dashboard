@@ -1,0 +1,15 @@
+import { NextResponse } from 'next/server'
+import { drainImmediateDeliveries } from '@/lib/delivery/worker'
+
+export const dynamic = 'force-dynamic'
+
+function isCronAuthorized(request: Request): boolean {
+  const secret = process.env.CRON_SECRET?.trim()
+  if (!secret) return process.env.NODE_ENV !== 'production'
+  return request.headers.get('authorization') === `Bearer ${secret}`
+}
+
+export async function GET(request: Request) {
+  if (!isCronAuthorized(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  return NextResponse.json(await drainImmediateDeliveries())
+}
