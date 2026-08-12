@@ -4,6 +4,8 @@ import { sql, type SQL } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
 import { drainImmediateDeliveries, runDeliverySweep } from '@/lib/delivery/worker'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
+import { encryptChannelConfig, parseChannelKeyring } from '@/lib/routing/crypto'
+import type { ChannelConfig } from '@/lib/delivery/types'
 import { requireTestDatabaseUrl } from './helpers/database'
 
 process.env.DATABASE_URL = requireTestDatabaseUrl()
@@ -13,6 +15,10 @@ const event = {
   ticketId: 'worker-ticket', appName: 'Worker App', kind: 'BUG' as const,
   priority: 'HIGH' as const, title: 'Worker failure', portalUrl: 'https://support.example.test/feedback/worker-ticket',
 }
+const channelKeyring = parseChannelKeyring(JSON.stringify({
+  active: 'v1',
+  keys: { v1: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=' },
+}))
 
 beforeEach(async () => {
   await getDb().execute(sql`truncate table delivery_attempts, delivery_outbox, escalation_events, feedback_tickets, source_apps, support_groups cascade`)
@@ -92,14 +98,40 @@ describe('runDeliverySweep', () => {
     expect((await outbox('job-expired')).status).toBe('SENT')
   })
 
-  it('leaves DATABASE jobs pending with a visible configuration-not-ready attempt', async () => {
-    await seedOutbox('job-database', { configSource: 'DATABASE', targetKey: 'channel:worker-channel', channelId: 'worker-channel' })
+  it('decrypts and dispatches database-backed email, Pushover, and webhook jobs', async () => {
+    await seedDatabaseChannel('database-email', { type: 'EMAIL', to: ['alerts@example.test'] })
+    await seedDatabaseChannel('database-pushover', { type: 'PUSHOVER', appToken: 'token', userKey: 'user' })
+    await seedDatabaseChannel('database-webhook', { type: 'WEBHOOK', url: 'https://93.184.216.34/hook', signingSecret: 'secret' })
+    await seedOutbox('job-database-email', { configSource: 'DATABASE', targetKey: 'channel:database-email', channelId: 'database-email', channelType: 'EMAIL' })
+    await seedOutbox('job-database-pushover', { configSource: 'DATABASE', targetKey: 'channel:database-pushover', channelId: 'database-pushover', channelType: 'PUSHOVER', generation: 2 })
+    await seedOutbox('job-database-webhook', { configSource: 'DATABASE', targetKey: 'channel:database-webhook', channelId: 'database-webhook', channelType: 'WEBHOOK', generation: 3 })
+    const sentTypes: string[] = []
 
-    const result = await runDeliverySweep({ db: getDb(), now, workerId: 'worker', legacyConfig: legacyConfig(), send: async () => { throw new Error('DATABASE must not dispatch') } })
+    const result = await runDeliverySweep({
+      db: getDb(), limit: 3, now, workerId: 'worker', legacyConfig: legacyConfig(), keyring: channelKeyring,
+      send: async ({ config }) => {
+        sentTypes.push(config.type)
+        return sent()
+      },
+    })
 
-    expect(result.configurationNotReady).toBe(1)
-    expect((await outbox('job-database')).status).toBe('PENDING')
-    expect(await attempt('job-database')).toMatchObject({ resultClass: 'CONFIGURATION_NOT_READY' })
+    expect(result).toMatchObject({ started: 3, sent: 3, configurationNotReady: 0 })
+    expect(sentTypes.sort()).toEqual(['EMAIL', 'PUSHOVER', 'WEBHOOK'])
+    expect(await outboxStatuses()).toEqual(['SENT', 'SENT', 'SENT'])
+  })
+
+  it('makes tampered and unknown-key database records visible permanent configuration failures', async () => {
+    await seedDatabaseChannel('database-tampered', { type: 'EMAIL', to: ['alerts@example.test'] }, { ciphertext: 'AAAA' })
+    await seedDatabaseChannel('database-unknown-key', { type: 'EMAIL', to: ['alerts@example.test'] }, { keyVersion: 9 })
+    await seedOutbox('job-database-tampered', { configSource: 'DATABASE', targetKey: 'channel:database-tampered', channelId: 'database-tampered', channelType: 'EMAIL' })
+    await seedOutbox('job-database-unknown-key', { configSource: 'DATABASE', targetKey: 'channel:database-unknown-key', channelId: 'database-unknown-key', channelType: 'EMAIL', generation: 2 })
+
+    await runDeliverySweep({ db: getDb(), limit: 2, now, workerId: 'worker', legacyConfig: legacyConfig(), keyring: channelKeyring, send: async () => { throw new Error('invalid config must not dispatch') } })
+
+    expect((await outbox('job-database-tampered')).status).toBe('FAILED')
+    expect((await outbox('job-database-unknown-key')).status).toBe('FAILED')
+    expect(await attempt('job-database-tampered')).toMatchObject({ resultClass: 'permanent', sanitizedError: 'CONFIGURATION_INVALID' })
+    expect(await attempt('job-database-unknown-key')).toMatchObject({ resultClass: 'permanent', sanitizedError: 'CONFIGURATION_INVALID' })
   })
 
   it('releases an unconfigured legacy target into the future so a drain does not churn it', async () => {
@@ -275,6 +307,7 @@ async function seedOutbox(id: string, options: {
   configSource?: 'DATABASE' | 'LEGACY_ENV'
   targetKey?: string
   channelId?: string | null
+  channelType?: 'EMAIL' | 'PUSHOVER' | 'WEBHOOK'
   generation?: number
 } = {}): Promise<void> {
   const configSource = options.configSource ?? 'LEGACY_ENV'
@@ -285,9 +318,25 @@ async function seedOutbox(id: string, options: {
       id, escalation_event_id, event_key, target_key, generation, channel_id, channel_type, config_source,
       rendered_payload, status, next_attempt_at, attempt_count, lease_token, lease_expires_at, created_at, updated_at
     ) values (
-      ${id}, 'worker-event', ${`event-${id}`}, ${targetKey}, ${options.generation ?? 1}, ${channelId}, 'PUSHOVER', ${configSource},
+      ${id}, 'worker-event', ${`event-${id}`}, ${targetKey}, ${options.generation ?? 1}, ${channelId}, ${options.channelType ?? 'PUSHOVER'}::"ChannelType", ${configSource},
       ${JSON.stringify(event)}::jsonb, ${options.status ?? 'PENDING'}::"DeliveryStatus", ${now}, 0,
       ${options.status === 'LEASED' ? 'stale-worker' : null}, ${options.leaseExpiresAt ?? null}, ${now}, ${now}
+    )
+  `)
+}
+
+async function seedDatabaseChannel(
+  id: string,
+  config: ChannelConfig,
+  overrides: Partial<{ ciphertext: string; keyVersion: number }> = {},
+): Promise<void> {
+  const encrypted = encryptChannelConfig(config, { channelId: id, type: config.type }, channelKeyring)
+  await getDb().execute(sql`
+    insert into notification_channels (
+      id, group_id, name, type, status, encrypted_config, config_nonce, config_auth_tag, key_version, created_at, updated_at
+    ) values (
+      ${id}, 'worker-group', ${id}, ${config.type}::"ChannelType", 'ACTIVE',
+      ${overrides.ciphertext ?? encrypted.ciphertext}, ${encrypted.nonce}, ${encrypted.authTag}, ${overrides.keyVersion ?? 1}, ${now}, ${now}
     )
   `)
 }

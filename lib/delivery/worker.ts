@@ -1,18 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { sendPushoverDelivery } from '@/lib/delivery/adapters/pushover'
-import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
+import { dispatchDelivery, type DeliveryAdapterResult } from '@/lib/delivery/dispatch'
 import {
   claimLegacyDeliveries,
   DEFAULT_LEASE_DURATION_MS,
   finishDelivery,
-  recordConfigurationNotReady,
+  getDatabaseDeliveryChannel,
   releaseLegacyConfigurationNotReady,
   renewDeliveryLease,
 } from '@/lib/delivery/repository'
-import type { DeliveryEvent } from '@/lib/delivery/types'
+import type { ChannelConfig, DeliveryEvent } from '@/lib/delivery/types'
 import { getDb, type Db } from '@/lib/db'
 import { getPushoverConfig } from '@/lib/notifications/pushover'
 import { after } from 'next/server'
+import { decryptChannelConfig, loadChannelKeyring, type ChannelKeyring } from '@/lib/routing/crypto'
+import { validateChannelConfig } from '@/lib/routing/channel-schemas'
 
 export interface DeliverySweepResult {
   claimed: number
@@ -23,9 +24,9 @@ export interface DeliverySweepResult {
   configurationNotReady: number
 }
 
-type LegacyDeliverySender = (input: {
+type DeliverySender = (input: {
   event: DeliveryEvent
-  config: { type: 'PUSHOVER'; appToken: string; userKey: string }
+  config: ChannelConfig
   idempotencyKey: string
 }) => Promise<DeliveryAdapterResult>
 
@@ -35,7 +36,8 @@ export async function runDeliverySweep({
   now = new Date(),
   workerId = randomUUID(),
   legacyConfig = defaultLegacyConfig(),
-  send = sendPushoverDelivery,
+  send = dispatchDelivery,
+  keyring,
   concurrency = 20,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   leaseRenewalMs = Math.max(1, Math.floor(leaseDurationMs / 3)),
@@ -45,13 +47,14 @@ export async function runDeliverySweep({
   now?: Date
   workerId?: string
   legacyConfig?: { type: 'PUSHOVER'; appToken: string; userKey: string } | null
-  send?: LegacyDeliverySender
+  send?: DeliverySender
+  keyring?: ChannelKeyring | null
   concurrency?: number
   leaseDurationMs?: number
   leaseRenewalMs?: number
 } = {}): Promise<DeliverySweepResult> {
   const activeConcurrency = Math.max(1, Math.floor(concurrency))
-  const configurationNotReady = await recordConfigurationNotReady({ db, now, limit })
+  const channelKeyring = keyring === undefined ? loadKeyringSafely() : keyring
   // Claim only work we can start now. Queued claimed rows would otherwise
   // consume their lease while waiting behind a slow provider.
   const claimed = await claimLegacyDeliveries({ db, limit: Math.min(limit, activeConcurrency), now, workerId, leaseDurationMs })
@@ -61,13 +64,19 @@ export async function runDeliverySweep({
     sent: 0,
     retrying: 0,
     failed: 0,
-    configurationNotReady,
+    configurationNotReady: 0,
   }
 
   await runWithConcurrency(claimed, activeConcurrency, async (job) => {
-    if (!legacyConfig) {
-      await releaseLegacyConfigurationNotReady({ db, id: job.id, workerId, now })
-      result.configurationNotReady += 1
+    const config = await configForJob({ db, job, legacyConfig, keyring: channelKeyring })
+    if (!config) {
+      if (job.configSource === 'LEGACY_ENV') {
+        await releaseLegacyConfigurationNotReady({ db, id: job.id, workerId, now })
+        result.configurationNotReady += 1
+        return
+      }
+      await finishConfigurationFailure({ db, id: job.id, workerId })
+      result.failed += 1
       return
     }
 
@@ -77,7 +86,7 @@ export async function runDeliverySweep({
       const startedAt = new Date()
       const outcome = await send({
         event: job.renderedPayload as unknown as DeliveryEvent,
-        config: legacyConfig,
+        config,
         idempotencyKey: job.eventKey,
       })
       const finishedAt = new Date()
@@ -134,6 +143,54 @@ async function runWithConcurrency<T>(
 function defaultLegacyConfig(): { type: 'PUSHOVER'; appToken: string; userKey: string } | null {
   const config = getPushoverConfig()
   return config ? { type: 'PUSHOVER', ...config } : null
+}
+
+async function configForJob({
+  db,
+  job,
+  legacyConfig,
+  keyring,
+}: {
+  db: Db
+  job: Awaited<ReturnType<typeof claimLegacyDeliveries>>[number]
+  legacyConfig: { type: 'PUSHOVER'; appToken: string; userKey: string } | null
+  keyring: ChannelKeyring | null
+}): Promise<ChannelConfig | null> {
+  if (job.configSource === 'LEGACY_ENV') return legacyConfig
+  if (!job.channelId || !keyring) return null
+  try {
+    const channel = await getDatabaseDeliveryChannel({ db, channelId: job.channelId })
+    if (!channel || channel.type !== job.channelType) return null
+    const config = decryptChannelConfig({
+      keyVersion: `v${channel.keyVersion}`,
+      nonce: channel.configNonce,
+      ciphertext: channel.encryptedConfig,
+      authTag: channel.configAuthTag,
+    }, { channelId: channel.id, type: channel.type }, keyring)
+    return await validateChannelConfig(channel.type, config)
+  } catch {
+    return null
+  }
+}
+
+async function finishConfigurationFailure({ db, id, workerId }: { db: Db; id: string; workerId: string }): Promise<void> {
+  const startedAt = new Date()
+  await finishDelivery({
+    db,
+    id,
+    workerId,
+    startedAt,
+    finishedAt: new Date(),
+    result: { result: 'permanent', providerStatus: null, providerMessageId: null, retryAfterMs: null, sanitizedError: 'CONFIGURATION_INVALID' },
+  })
+}
+
+function loadKeyringSafely(): ChannelKeyring | null {
+  try {
+    return loadChannelKeyring()
+  } catch {
+    return null
+  }
 }
 
 export async function drainImmediateDeliveries({

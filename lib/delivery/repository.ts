@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { getDb, type Db } from '@/lib/db'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
+import type { DeliveryChannelType } from '@/lib/delivery/types'
 
 export const retryDelaysMs = [
   60_000,
@@ -22,6 +23,18 @@ export interface ClaimedDelivery {
   targetKey: string
   renderedPayload: Record<string, unknown>
   attemptCount: number
+  channelId: string | null
+  channelType: DeliveryChannelType
+  configSource: 'DATABASE' | 'LEGACY_ENV'
+}
+
+export interface DatabaseDeliveryChannel {
+  id: string
+  type: DeliveryChannelType
+  encryptedConfig: string
+  configNonce: string
+  configAuthTag: string
+  keyVersion: number
 }
 
 export async function claimLegacyDeliveries({
@@ -42,9 +55,7 @@ export async function claimLegacyDeliveries({
     with candidates as (
       select id
         from delivery_outbox
-       where target_key = 'legacy:central-pushover'
-         and config_source = 'LEGACY_ENV'
-         and (
+       where (
            (status in ('PENDING', 'RETRYING') and next_attempt_at <= ${now})
            or (status = 'LEASED' and lease_expires_at <= ${now})
          )
@@ -60,9 +71,28 @@ export async function claimLegacyDeliveries({
        outbox.event_key as "eventKey",
        outbox.target_key as "targetKey",
        outbox.rendered_payload as "renderedPayload",
-       outbox.attempt_count as "attemptCount"
+       outbox.attempt_count as "attemptCount",
+       outbox.channel_id as "channelId",
+       outbox.channel_type::text as "channelType",
+       outbox.config_source as "configSource"
   `)
   return result.rows
+}
+
+export async function getDatabaseDeliveryChannel({
+  db = getDb(),
+  channelId,
+}: {
+  db?: Db
+  channelId: string
+}): Promise<DatabaseDeliveryChannel | null> {
+  const result = await db.execute<DatabaseDeliveryChannel & Record<string, unknown>>(sql`
+    select id, type::text as type, encrypted_config as "encryptedConfig", config_nonce as "configNonce",
+      config_auth_tag as "configAuthTag", key_version as "keyVersion"
+      from notification_channels
+     where id = ${channelId} and status = 'ACTIVE'
+  `)
+  return result.rows[0] ?? null
 }
 
 export async function renewDeliveryLease({
