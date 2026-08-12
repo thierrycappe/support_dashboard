@@ -4,6 +4,7 @@ import Link from 'next/link'
 import type { Route } from 'next'
 import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Badge from '@/components/ui/Badge'
 
 const destinations = [
   { href: '/', label: 'Escalations', adminOnly: false },
@@ -15,9 +16,11 @@ const destinations = [
 
 export default function NavLinks({
   isAdmin,
+  deadLetterCount = 0,
   pathname: pathnameOverride,
 }: {
   isAdmin: boolean
+  deadLetterCount?: number
   pathname?: string
 }) {
   const currentPathname = usePathname()
@@ -110,15 +113,17 @@ export default function NavLinks({
             ? pathname === '/'
             : pathname === destination.href || pathname.startsWith(`${destination.href}/`)
           return (
-            <Link
-              key={destination.href}
+            <div className="nav-destination" key={destination.href}>
+              <Link
               ref={isCurrent ? activeLinkRef : undefined}
               className="nav-link"
               href={destination.href as Route}
               aria-current={isCurrent ? 'page' : undefined}
-            >
-              {destination.label}
-            </Link>
+              >
+                {destination.label}
+              </Link>
+              {destination.href === '/deliveries' && deadLetterCount > 0 ? <Badge tone="danger">{deadLetterCount} {deadLetterCount === 1 ? 'dead letter' : 'dead letters'}</Badge> : null}
+            </div>
           )
         })}
       </nav>

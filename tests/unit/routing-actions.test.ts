@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   requireDeliveryRetryUser: vi.fn(),
   createGroup: vi.fn(),
   createChannel: vi.fn(),
+  updateChannel: vi.fn(),
   setAppPolicy: vi.fn(),
   retryFailedDelivery: vi.fn(),
   DeliveryRetryError: class DeliveryRetryError extends Error {
@@ -19,7 +20,7 @@ vi.mock('@/lib/auth/guards', () => ({
   requireDeliveryRetryUser: mocks.requireDeliveryRetryUser,
 }))
 vi.mock('@/lib/routing/groups', () => ({ createGroup: mocks.createGroup }))
-vi.mock('@/lib/routing/channels', () => ({ createChannel: mocks.createChannel }))
+vi.mock('@/lib/routing/channels', () => ({ createChannel: mocks.createChannel, updateChannel: mocks.updateChannel }))
 vi.mock('@/lib/routing/policies', () => ({ setAppPolicy: mocks.setAppPolicy }))
 vi.mock('@/lib/delivery/repository', () => ({
   retryFailedDelivery: mocks.retryFailedDelivery,
@@ -28,7 +29,7 @@ vi.mock('@/lib/delivery/repository', () => ({
 vi.mock('@/lib/delivery/worker', () => ({ scheduleDeliveryWakeup: mocks.scheduleDeliveryWakeup }))
 vi.mock('next/cache', () => ({ revalidatePath: mocks.revalidatePath }))
 
-import { createAlertChannelAction, createTechnicalGroupAction } from '@/app/teams/actions'
+import { createAlertChannelAction, createTechnicalGroupAction, replaceAlertChannelSecretAction } from '@/app/teams/actions'
 import { updateAppPolicyAction } from '@/app/apps/actions'
 import { retryDeliveryAction } from '@/app/deliveries/actions'
 
@@ -41,6 +42,7 @@ beforeEach(() => {
   mocks.requireDeliveryRetryUser.mockResolvedValue(admin)
   mocks.createGroup.mockResolvedValue({ id: 'group-1' })
   mocks.createChannel.mockResolvedValue({ id: 'channel-1' })
+  mocks.updateChannel.mockResolvedValue({ id: 'channel-1' })
   mocks.setAppPolicy.mockResolvedValue({ sourceAppId: 'app-1' })
   mocks.retryFailedDelivery.mockResolvedValue({ outcome: 'created', delivery: { id: 'delivery-2', generation: 2, status: 'PENDING' } })
 })
@@ -177,6 +179,17 @@ describe('routing administration actions', () => {
     await expect(createAlertChannelAction({ status: 'idle' }, form({
       groupId: 'group-1', name: 'Ops', type: 'PUSHOVER', config: '{"appToken":"a","userKey":"u"}',
     }))).resolves.toEqual({ status: 'error', message: 'Alert channel was not created' })
+  })
+
+  it('requires an admin before replacing an encrypted channel configuration', async () => {
+    mocks.requireAdminUser.mockRejectedValue(new Error('NEXT_REDIRECT'))
+    await expect(replaceAlertChannelSecretAction({ status: 'idle' }, form({ channelId: 'channel-1', config: '{"to":["ops@example.test"]}' }))).rejects.toThrow('NEXT_REDIRECT')
+    expect(mocks.updateChannel).not.toHaveBeenCalled()
+  })
+
+  it('replaces channel configuration only through the guarded server action', async () => {
+    await expect(replaceAlertChannelSecretAction({ status: 'idle' }, form({ channelId: 'channel-1', config: '{"to":["ops@example.test"]}' }))).resolves.toEqual({ status: 'success', message: 'Alert channel configuration replaced' })
+    expect(mocks.updateChannel).toHaveBeenCalledWith(expect.objectContaining({ id: 'channel-1', config: { to: ['ops@example.test'] }, actorId: 'admin-1', reason: 'Replaced alert channel configuration' }))
   })
 })
 

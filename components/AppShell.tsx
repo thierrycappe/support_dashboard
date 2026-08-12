@@ -4,9 +4,13 @@ import { auth } from '@/auth'
 import NavLinks from '@/components/NavLinks'
 import ThemeToggle from '@/components/ThemeToggle'
 import { normalizeTheme } from '@/components/theme'
+import { hasDatabaseUrl } from '@/lib/db'
+import { getDeadLetterCount } from '@/lib/delivery/queries'
 
 export default async function AppShell({ children }: { children: React.ReactNode }) {
-  const [session, cookieStore] = await Promise.all([auth(), cookies()])
+  const [session, cookieStore, deadLetterCount] = await Promise.all([
+    auth(), cookies(), hasDatabaseUrl() ? getDeadLetterCount().catch(() => 0) : Promise.resolve(0),
+  ])
   const isAdmin = session?.user?.role === 'ADMIN'
   const theme = normalizeTheme(cookieStore.get('support-theme')?.value)
   const identity = session?.user?.name ?? session?.user?.email ?? (isAdmin ? 'Administrator' : 'Support operator')
@@ -19,7 +23,7 @@ export default async function AppShell({ children }: { children: React.ReactNode
           <span className="brand-mark" aria-hidden="true">ST</span>
           <span>Support Tower</span>
         </div>
-        <NavLinks isAdmin={isAdmin} />
+        <NavLinks isAdmin={isAdmin} deadLetterCount={deadLetterCount} />
         <div className="shell-utilities">
           <ThemeToggle initialTheme={theme} />
           <div className="operator-identity">

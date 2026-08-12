@@ -48,7 +48,7 @@ describe('product shell', () => {
   })
 
   it('exposes ordered navigation landmarks and the active destination', () => {
-    render(<NavLinks pathname="/deliveries" isAdmin />)
+    render(<NavLinks pathname="/deliveries" isAdmin deadLetterCount={2} />)
     const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
     expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Escalations',
@@ -58,6 +58,7 @@ describe('product shell', () => {
       'Access',
     ])
     expect(screen.getByRole('link', { name: 'Deliveries' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByText('2 dead letters')).toBeVisible()
   })
 
   it('keeps administrative destinations out of the support navigation', () => {

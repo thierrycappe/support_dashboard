@@ -2,13 +2,13 @@ import { notFound } from 'next/navigation'
 import AppShell from '@/components/AppShell'
 import Badge from '@/components/ui/Badge'
 import { getApplicationDetail } from '@/lib/apps/queries'
-import { requireAuthenticatedUser } from '@/lib/auth/guards'
+import { requireAdminUser } from '@/lib/auth/guards'
 
 export const dynamic = 'force-dynamic'
 const date = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' })
 
 export default async function ApplicationDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  await requireAuthenticatedUser()
+  await requireAdminUser()
   const app = await getApplicationDetail((await params).id)
   if (!app) notFound()
   return <AppShell><header className="topbar"><div><p className="eyebrow">Application</p><h1>{app.name}</h1><p className="subtle">Ownership, connector status, and current notification policy.</p></div><Badge tone={app.enrollmentStatus === 'ACTIVE' ? 'success' : 'neutral'}>{label(app.enrollmentStatus)}</Badge></header>

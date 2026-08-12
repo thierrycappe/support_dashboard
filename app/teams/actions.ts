@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { requireAdminUser } from '@/lib/auth/guards'
-import { createChannel } from '@/lib/routing/channels'
+import { createChannel, updateChannel } from '@/lib/routing/channels'
 import { createGroup } from '@/lib/routing/groups'
 
 export type ActionState =
@@ -31,6 +31,12 @@ const channelSchema = z.object({
   }),
   status: z.enum(['ACTIVE', 'DISABLED', 'UNHEALTHY']),
   includeReporterContext: z.boolean(),
+})
+const replacementSchema = z.object({
+  channelId: z.string().trim().min(1, 'An alert channel is required'),
+  config: z.string().min(1, 'Channel configuration is required').transform((value, context) => {
+    try { return JSON.parse(value) as unknown } catch { context.addIssue({ code: 'custom', message: 'Channel configuration must be valid JSON' }); return z.NEVER }
+  }),
 })
 
 export async function createTechnicalGroupAction(_previous: ActionState, formData: FormData): Promise<ActionState> {
@@ -86,6 +92,23 @@ export async function createAlertChannelAction(_previous: ActionState, formData:
   }
   revalidatePath('/teams')
   return { status: 'success', message: 'Alert channel created' }
+}
+
+export async function replaceAlertChannelSecretAction(_previous: ActionState, formData: FormData): Promise<ActionState> {
+  const user = await requireAdminUser()
+  const parsed = replacementSchema.safeParse({ channelId: String(formData.get('channelId') ?? ''), config: String(formData.get('config') ?? '') })
+  if (!parsed.success) return validationError(parsed.error)
+  try {
+    await updateChannel({
+      id: parsed.data.channelId, config: parsed.data.config, actorId: user.id, correlationId: randomUUID(),
+      reason: 'Replaced alert channel configuration',
+    })
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Invalid channel configuration') return { status: 'error', message: 'Please correct the highlighted fields', fieldErrors: { config: ['Channel configuration is invalid'] } }
+    return { status: 'error', message: 'Alert channel configuration was not replaced' }
+  }
+  revalidatePath('/teams')
+  return { status: 'success', message: 'Alert channel configuration replaced' }
 }
 
 function validationError(error: z.ZodError): ActionState {

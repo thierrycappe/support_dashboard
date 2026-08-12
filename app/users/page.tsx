@@ -28,10 +28,10 @@ export default async function UsersPage() {
     <AppShell>
       <div className="topbar">
         <div>
-          <p className="eyebrow">Administration</p>
+          <p className="eyebrow">Access administration</p>
           <h1>Support users</h1>
           <p className="subtle">
-            Create and manage the people who can work the support queue.
+            Create and manage the people who can work the support queue. Credential security and the immutable audit are available in Access.
           </p>
         </div>
         <Link className="button" href={NEW_USER_ROUTE}>
