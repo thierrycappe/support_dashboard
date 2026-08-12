@@ -2,19 +2,29 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   requireAdminUser: vi.fn(),
+  requireDeliveryRetryUser: vi.fn(),
   createGroup: vi.fn(),
   createChannel: vi.fn(),
   setAppPolicy: vi.fn(),
   retryFailedDelivery: vi.fn(),
+  DeliveryRetryError: class DeliveryRetryError extends Error {
+    constructor(readonly code: 'NOT_FOUND' | 'NOT_ELIGIBLE' | 'STALE') { super(code) }
+  },
   revalidatePath: vi.fn(),
   scheduleDeliveryWakeup: vi.fn(),
 }))
 
-vi.mock('@/lib/auth/guards', () => ({ requireAdminUser: mocks.requireAdminUser }))
+vi.mock('@/lib/auth/guards', () => ({
+  requireAdminUser: mocks.requireAdminUser,
+  requireDeliveryRetryUser: mocks.requireDeliveryRetryUser,
+}))
 vi.mock('@/lib/routing/groups', () => ({ createGroup: mocks.createGroup }))
 vi.mock('@/lib/routing/channels', () => ({ createChannel: mocks.createChannel }))
 vi.mock('@/lib/routing/policies', () => ({ setAppPolicy: mocks.setAppPolicy }))
-vi.mock('@/lib/delivery/repository', () => ({ retryFailedDelivery: mocks.retryFailedDelivery }))
+vi.mock('@/lib/delivery/repository', () => ({
+  retryFailedDelivery: mocks.retryFailedDelivery,
+  DeliveryRetryError: mocks.DeliveryRetryError,
+}))
 vi.mock('@/lib/delivery/worker', () => ({ scheduleDeliveryWakeup: mocks.scheduleDeliveryWakeup }))
 vi.mock('next/cache', () => ({ revalidatePath: mocks.revalidatePath }))
 
@@ -23,14 +33,16 @@ import { updateAppPolicyAction } from '@/app/apps/actions'
 import { retryDeliveryAction } from '@/app/deliveries/actions'
 
 const admin = { id: 'admin-1', role: 'ADMIN' }
+const support = { id: 'support-1', role: 'SUPPORT' }
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.requireAdminUser.mockResolvedValue(admin)
+  mocks.requireDeliveryRetryUser.mockResolvedValue(admin)
   mocks.createGroup.mockResolvedValue({ id: 'group-1' })
   mocks.createChannel.mockResolvedValue({ id: 'channel-1' })
   mocks.setAppPolicy.mockResolvedValue({ sourceAppId: 'app-1' })
-  mocks.retryFailedDelivery.mockResolvedValue({ id: 'delivery-2', generation: 2 })
+  mocks.retryFailedDelivery.mockResolvedValue({ outcome: 'created', delivery: { id: 'delivery-2', generation: 2, status: 'PENDING' } })
 })
 
 describe('routing administration actions', () => {
@@ -102,6 +114,69 @@ describe('routing administration actions', () => {
     }))
     expect(mocks.scheduleDeliveryWakeup).toHaveBeenCalledOnce()
     expect(mocks.revalidatePath).toHaveBeenCalledWith('/deliveries')
+  })
+
+  it('allows a support user to queue an eligible failed delivery retry', async () => {
+    mocks.requireDeliveryRetryUser.mockResolvedValue(support)
+
+    await expect(retryDeliveryAction({ status: 'idle' }, form({ deliveryId: 'delivery-1' }))).resolves.toEqual({
+      status: 'success', message: 'Delivery queued',
+    })
+
+    expect(mocks.retryFailedDelivery).toHaveBeenCalledWith(expect.objectContaining({ actorId: 'support-1' }))
+    expect(mocks.requireAdminUser).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unauthenticated user before retrying a delivery', async () => {
+    mocks.requireDeliveryRetryUser.mockRejectedValue(new Error('NEXT_REDIRECT'))
+
+    await expect(retryDeliveryAction({ status: 'idle' }, form({ deliveryId: 'delivery-1' }))).rejects.toThrow('NEXT_REDIRECT')
+
+    expect(mocks.retryFailedDelivery).not.toHaveBeenCalled()
+  })
+
+  it('does not expose an arbitrary retry infrastructure error', async () => {
+    mocks.retryFailedDelivery.mockRejectedValue(new Error('postgresql://secret-host/internal failure'))
+
+    await expect(retryDeliveryAction({ status: 'idle' }, form({ deliveryId: 'delivery-1' }))).resolves.toEqual({
+      status: 'error', message: 'Delivery could not be queued',
+    })
+    expect(mocks.scheduleDeliveryWakeup).not.toHaveBeenCalled()
+  })
+
+  it('maps a known retry lifecycle error to a factual public message', async () => {
+    mocks.retryFailedDelivery.mockRejectedValue(new mocks.DeliveryRetryError('NOT_ELIGIBLE'))
+
+    await expect(retryDeliveryAction({ status: 'idle' }, form({ deliveryId: 'delivery-1' }))).resolves.toEqual({
+      status: 'error', message: 'Only failed deliveries can be retried',
+    })
+    expect(mocks.scheduleDeliveryWakeup).not.toHaveBeenCalled()
+  })
+
+  it('reports an already pending duplicate retry truthfully', async () => {
+    mocks.retryFailedDelivery.mockResolvedValue({ outcome: 'duplicate', delivery: { id: 'delivery-2', generation: 2, status: 'PENDING' } })
+
+    await expect(retryDeliveryAction({ status: 'idle' }, form({ deliveryId: 'delivery-1' }))).resolves.toEqual({
+      status: 'success', message: 'Delivery already queued',
+    })
+  })
+
+  it('maps rejected channel validation to the configuration field', async () => {
+    mocks.createChannel.mockRejectedValue(new Error('Invalid channel configuration'))
+
+    await expect(createAlertChannelAction({ status: 'idle' }, form({
+      groupId: 'group-1', name: 'Ops', type: 'WEBHOOK', config: '{"url":"https://example.test","signingSecret":"secret"}',
+    }))).resolves.toEqual({
+      status: 'error', message: 'Please correct the highlighted fields', fieldErrors: { config: ['Channel configuration is invalid'] },
+    })
+  })
+
+  it('keeps alert-channel infrastructure failures generic', async () => {
+    mocks.createChannel.mockRejectedValue(new Error('Channel encryption keyring is not configured'))
+
+    await expect(createAlertChannelAction({ status: 'idle' }, form({
+      groupId: 'group-1', name: 'Ops', type: 'PUSHOVER', config: '{"appToken":"a","userKey":"u"}',
+    }))).resolves.toEqual({ status: 'error', message: 'Alert channel was not created' })
   })
 })
 

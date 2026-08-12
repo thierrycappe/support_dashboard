@@ -24,23 +24,47 @@ describe('retryFailedDelivery', () => {
       retryFailedDelivery({ db: getDb(), id: 'failed-delivery', ...audit('second') }),
     ])
 
-    expect(first).toMatchObject({ generation: 5, status: 'PENDING' })
-    expect(second).toEqual(first)
+    expect([first.outcome, second.outcome].sort()).toEqual(['created', 'duplicate'])
+    expect(first.delivery).toMatchObject({ generation: 5, status: 'PENDING' })
+    expect(second.delivery).toEqual(first.delivery)
     expect(await outboxRows()).toEqual([
       { id: 'failed-delivery', generation: 4, status: 'FAILED', attemptCount: 3 },
-      { id: first.id, generation: 5, status: 'PENDING', attemptCount: 0 },
+      { id: first.delivery.id, generation: 5, status: 'PENDING', attemptCount: 0 },
     ])
-    expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'DELIVERY_REQUEUED' and subject_id = ${first.id}`)).toBe(1)
+    expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'DELIVERY_REQUEUED' and subject_id = ${first.delivery.id}`)).toBe(1)
   })
 
-  it('does not retry a sent delivery or mutate its terminal row', async () => {
-    await seedOutbox('sent-delivery', 'SENT', 2)
+  it('returns the existing pending generation without duplicating audit evidence', async () => {
+    await seedOutbox('failed-delivery', 'FAILED', 2)
+    await seedOutbox('pending-delivery', 'PENDING', 3)
 
-    await expect(retryFailedDelivery({ db: getDb(), id: 'sent-delivery', ...audit('sent') })).rejects.toThrow('Only failed deliveries can be retried')
+    await expect(retryFailedDelivery({ db: getDb(), id: 'failed-delivery', ...audit('pending') })).resolves.toEqual({
+      outcome: 'duplicate', delivery: { id: 'pending-delivery', generation: 3, status: 'PENDING' },
+    })
+    expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'DELIVERY_REQUEUED' and subject_id = 'pending-delivery'`)).toBe(0)
+  })
+
+  it('rejects a stale next generation without claiming it is pending', async () => {
+    await seedOutbox('failed-delivery', 'FAILED', 2)
+    await seedOutbox('sent-delivery', 'SENT', 3)
+
+    await expect(retryFailedDelivery({ db: getDb(), id: 'failed-delivery', ...audit('stale') })).rejects.toThrow('Delivery retry is no longer pending')
+    expect(await outboxRows()).toEqual([
+      { id: 'failed-delivery', generation: 2, status: 'FAILED', attemptCount: 3 },
+      { id: 'sent-delivery', generation: 3, status: 'SENT', attemptCount: 3 },
+    ])
+    expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'DELIVERY_REQUEUED' and subject_id = 'sent-delivery'`)).toBe(0)
+  })
+
+  it.each(['PENDING', 'LEASED', 'RETRYING', 'SENT', 'CANCELLED'] as const)('rejects a %s delivery without mutation or audit evidence', async (status) => {
+    await seedOutbox(`${status.toLowerCase()}-delivery`, status, 2)
+
+    await expect(retryFailedDelivery({ db: getDb(), id: `${status.toLowerCase()}-delivery`, ...audit(status) })).rejects.toThrow('Only failed deliveries can be retried')
 
     expect(await outboxRows()).toEqual([
-      { id: 'sent-delivery', generation: 2, status: 'SENT', attemptCount: 3 },
+      { id: `${status.toLowerCase()}-delivery`, generation: 2, status, attemptCount: 3 },
     ])
+    expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'DELIVERY_REQUEUED' and subject_id = ${`${status.toLowerCase()}-delivery`}`)).toBe(0)
   })
 })
 
@@ -67,7 +91,7 @@ async function seedGraph() {
   `)
 }
 
-async function seedOutbox(id: string, status: 'FAILED' | 'SENT', generation: number) {
+async function seedOutbox(id: string, status: 'PENDING' | 'LEASED' | 'RETRYING' | 'FAILED' | 'SENT' | 'CANCELLED', generation: number) {
   await getDb().execute(sql`
     insert into delivery_outbox (
       id, escalation_event_id, event_key, target_key, generation, channel_type, config_source,

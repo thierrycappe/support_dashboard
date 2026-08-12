@@ -75,7 +75,13 @@ export async function createAlertChannelAction(_previous: ActionState, formData:
       correlationId: randomUUID(),
       reason: 'Created alert channel',
     })
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Invalid channel configuration') {
+      return {
+        status: 'error', message: 'Please correct the highlighted fields',
+        fieldErrors: { config: ['Channel configuration is invalid'] },
+      }
+    }
     return { status: 'error', message: 'Alert channel was not created' }
   }
   revalidatePath('/teams')

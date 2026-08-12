@@ -44,6 +44,21 @@ export interface RetriedDelivery {
   status: 'PENDING'
 }
 
+export type RetryFailedDeliveryResult =
+  | { outcome: 'created'; delivery: RetriedDelivery }
+  | { outcome: 'duplicate'; delivery: RetriedDelivery }
+
+export class DeliveryRetryError extends Error {
+  constructor(readonly code: 'NOT_FOUND' | 'NOT_ELIGIBLE' | 'STALE') {
+    super(code === 'NOT_FOUND'
+      ? 'Delivery not found'
+      : code === 'NOT_ELIGIBLE'
+        ? 'Only failed deliveries can be retried'
+        : 'Delivery retry is no longer pending')
+    this.name = 'DeliveryRetryError'
+  }
+}
+
 export async function retryFailedDelivery({
   db = getDb(),
   id,
@@ -55,7 +70,7 @@ export async function retryFailedDelivery({
   db?: Db
   id: string
   now?: Date
-}): Promise<RetriedDelivery> {
+}): Promise<RetryFailedDeliveryResult> {
   return db.transaction(async (tx) => {
     const sourceResult = await tx.execute<{
       id: string
@@ -77,8 +92,8 @@ export async function retryFailedDelivery({
        for update
     `)
     const source = sourceResult.rows[0]
-    if (!source) throw new Error('Delivery not found')
-    if (source.status !== 'FAILED') throw new Error('Only failed deliveries can be retried')
+    if (!source) throw new DeliveryRetryError('NOT_FOUND')
+    if (source.status !== 'FAILED') throw new DeliveryRetryError('NOT_ELIGIBLE')
 
     const nextGeneration = source.generation + 1
     const newId = nanoid()
@@ -106,7 +121,7 @@ export async function retryFailedDelivery({
         metadata: { previousDeliveryId: source.id, generation: created.generation, target: source.targetKey },
         now,
       })
-      return { ...created, status: 'PENDING' }
+      return { outcome: 'created', delivery: { ...created, status: 'PENDING' } }
     }
 
     const existing = await tx.execute<RetriedDelivery & Record<string, unknown>>(sql`
@@ -116,8 +131,9 @@ export async function retryFailedDelivery({
        limit 1
     `)
     const retried = existing.rows[0]
-    if (!retried) throw new Error('Delivery retry was not queued')
-    return { ...retried, status: 'PENDING' }
+    if (!retried) throw new DeliveryRetryError('STALE')
+    if (retried.status !== 'PENDING') throw new DeliveryRetryError('STALE')
+    return { outcome: 'duplicate', delivery: { ...retried, status: 'PENDING' } }
   })
 }
 
