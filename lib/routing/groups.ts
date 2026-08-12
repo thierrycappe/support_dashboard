@@ -93,11 +93,22 @@ export async function setGroupMembers({
       .where(eq(supportGroups.id, groupId)).for('update').limit(1)
     if (!group[0]) throw new Error('Support group not found')
 
+    const existingMembers = await tx.select({
+      supportUserId: supportGroupMembers.supportUserId,
+      recipientRef: supportGroupMembers.recipientRef,
+      role: supportGroupMembers.role,
+      status: supportGroupMembers.status,
+    }).from(supportGroupMembers).where(eq(supportGroupMembers.groupId, groupId))
+    const existingByIdentity = new Map(existingMembers.map((member) => [memberIdentity(member), member]))
+
     await tx.delete(supportGroupMembers).where(eq(supportGroupMembers.groupId, groupId))
-    const records = normalized.map((member) => ({
-      id: nanoid(), groupId, supportUserId: member.supportUserId, recipientRef: member.recipientRef,
-      role: member.role, status: member.status, createdAt: now, updatedAt: now,
-    }))
+    const records = normalized.map((member) => {
+      const existing = existingByIdentity.get(memberIdentity(member))
+      return {
+        id: nanoid(), groupId, supportUserId: member.supportUserId, recipientRef: member.recipientRef,
+        role: member.role ?? existing?.role ?? 'MEMBER', status: member.status ?? existing?.status ?? 'ACTIVE', createdAt: now, updatedAt: now,
+      }
+    })
     if (records.length > 0) await tx.insert(supportGroupMembers).values(records)
     await appendAuditEvent({
       db: tx, ...audit, action: 'GROUP_MEMBERS_SET', subjectType: 'support_group', subjectId: groupId,
@@ -118,8 +129,12 @@ function normalizeMembers(input: Array<{ supportUserId?: string | null; recipien
     const identity = supportUserId ? `user:${supportUserId}` : `recipient:${recipientRef}`
     if (seen.has(identity)) throw new Error('Duplicate group member')
     seen.add(identity)
-    return { supportUserId, recipientRef, role: member.role?.trim() || 'MEMBER', status: member.status ?? 'ACTIVE' as const }
+    return { supportUserId, recipientRef, role: member.role?.trim() || undefined, status: member.status }
   })
+}
+
+function memberIdentity(member: { supportUserId: string | null; recipientRef: string | null }): string {
+  return member.supportUserId ? `user:${member.supportUserId}` : `recipient:${member.recipientRef}`
 }
 
 function nonEmpty(value: string, name: string): string {

@@ -48,4 +48,15 @@ describe('team operations editors', () => {
     expect(screen.getByLabelText('Alert channel name')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Replace channel configuration' })).toBeVisible()
   })
+
+  it('keeps an existing disabled support account in the membership form', () => {
+    render(<GroupEditor action={action} membershipAction={action} users={[{
+      id: 'user-disabled', name: 'Former owner', email: 'former@example.test', status: 'DISABLED',
+    }]} groups={[{
+      id: 'group-platform', name: 'Platform reliability', status: 'ACTIVE', isCentralFallback: false,
+      members: [{ id: 'member-disabled', label: 'Former owner', supportUserId: 'user-disabled', recipientRef: null, role: 'OWNER', status: 'DISABLED' }],
+    }]} />)
+
+    expect(screen.getByRole('checkbox', { name: /Former owner/ })).toBeChecked()
+  })
 })

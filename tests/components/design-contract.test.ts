@@ -50,6 +50,12 @@ describe('design accessibility contract', () => {
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.operations-tabs a[\s\S]*?min-height:\s*44px/)
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.inline-operation-form,\s*\.channel-form[\s\S]*?grid-template-columns:\s*1fr/)
   })
+
+  it('stacks operational secondary metadata and keeps status badges intrinsic', () => {
+    expect(css).toMatch(/\.table-secondary\s*\{[\s\S]*?display:\s*block/)
+    expect(css).toMatch(/\.group-badges\s*\{[\s\S]*?align-items:\s*start/)
+    expect(css).toMatch(/\.group-badges\s+\.ui-badge\s*\{[\s\S]*?justify-self:\s*start[\s\S]*?width:\s*max-content/)
+  })
 })
 
 function parseThemeTokens(stylesheet: string, selector: string): ThemeTokens {

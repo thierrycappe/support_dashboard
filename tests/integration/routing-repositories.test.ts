@@ -64,6 +64,23 @@ describe('routing repositories', () => {
     expect(await scalar(sql`select count(*)::int as count from support_group_members where group_id = ${group.id}`)).toBe(1)
   })
 
+  it('preserves an unchanged member role and disabled state when membership is saved again', async () => {
+    const group = await createGroup({ name: 'Escalation owners', ...mutation })
+    await setGroupMembers({
+      groupId: group.id,
+      members: [{ supportUserId: 'member-1', role: 'OWNER', status: 'DISABLED' }],
+      ...mutation,
+    })
+
+    await setGroupMembers({ groupId: group.id, members: [{ supportUserId: 'member-1' }], ...mutation })
+
+    const saved = await getDb().execute<{ role: string; status: string }>(sql`
+      select role, status::text as status from support_group_members
+       where group_id = ${group.id} and support_user_id = 'member-1'
+    `)
+    expect(saved.rows[0]).toEqual({ role: 'OWNER', status: 'DISABLED' })
+  })
+
   it('persists only encrypted channel configuration and returns a redacted channel', async () => {
     const group = await createGroup({ name: 'Channel owners', ...mutation })
     const channel = await createChannel({

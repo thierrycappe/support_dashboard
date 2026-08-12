@@ -86,7 +86,7 @@ describe('operations page access boundaries', () => {
     expect(mocks.listTeamOperations).toHaveBeenCalledOnce()
     expect(mocks.listCredentialSecurity).toHaveBeenCalledOnce()
     expect(mocks.getAuditHistory).toHaveBeenCalledOnce()
-    expect(mocks.listSupportUsers).toHaveBeenCalledOnce()
+    expect(mocks.listSupportUsers).toHaveBeenCalledTimes(2)
     expect(mocks.getApplications).toHaveBeenCalledOnce()
     expect(mocks.getApplicationDetail).toHaveBeenCalledOnce()
   })

@@ -22,7 +22,7 @@ function GroupMembershipForm({ group, users, action }: { group: Group; users: Su
   const selected = new Set(group.members.flatMap((member) => member.supportUserId ? [member.supportUserId] : []))
   const recipients = group.members.flatMap((member) => member.recipientRef ? [member.recipientRef] : []).join(', ')
   return <form className="group-membership-form" action={formAction}><input type="hidden" name="groupId" value={group.id} />
-    <fieldset className="membership-options"><legend>Support members</legend>{users.filter((user) => user.status !== 'DISABLED').map((user) => <label className="check-field" key={user.id}><input type="checkbox" name="memberIds" value={user.id} defaultChecked={selected.has(user.id)} />{user.name}<span className="subtle">{user.email}</span></label>)}</fieldset>
+    <fieldset className="membership-options"><legend>Support members</legend>{users.filter((user) => user.status !== 'DISABLED' || selected.has(user.id)).map((user) => <label className="check-field" key={user.id}><input type="checkbox" name="memberIds" value={user.id} defaultChecked={selected.has(user.id)} />{user.name}<span className="subtle">{user.email}</span></label>)}</fieldset>
     <div className="field"><label htmlFor={`recipient-refs-${group.id}`}>External recipient references</label><input id={`recipient-refs-${group.id}`} name="recipientRefs" defaultValue={recipients} placeholder="partner-oncall, vendor-escalation" /></div>
     <Button type="submit" variant="secondary" loading={pending}>Save group members</Button>
     {state.status !== 'idle' ? <span role={state.status === 'error' ? 'alert' : 'status'} className={state.status === 'error' ? 'field-error' : 'action-confirmation'}>{state.message}</span> : null}
