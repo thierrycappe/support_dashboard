@@ -10,3 +10,4 @@ tsconfig.tsbuildinfo
 .env.local
 .env.*.local
 !.env.example
+.worktrees/
