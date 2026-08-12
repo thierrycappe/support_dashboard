@@ -13,7 +13,7 @@ export default function Pagination({
   if (!Number.isInteger(currentPage) || !Number.isInteger(totalPages) || currentPage < 1 || totalPages < 1 || currentPage > totalPages) {
     throw new Error('Invalid pagination state')
   }
-  const pages = Array.from({ length: totalPages }, (_, index) => index + 1)
+  const items = paginationItems(currentPage, totalPages)
 
   return (
     <nav className="ui-pagination" aria-label="Pagination">
@@ -23,15 +23,17 @@ export default function Pagination({
         <Link className="ui-page-step" href={hrefForPage(currentPage - 1) as Route} aria-label="Previous page">Previous</Link>
       )}
       <span className="ui-page-list">
-        {pages.map((page) => (
+        {items.map((item) => item.kind === 'ellipsis' ? (
+          <span key={item.key} className="ui-page-ellipsis" aria-hidden="true">…</span>
+        ) : (
           <Link
-            key={page}
+            key={item.page}
             className="ui-page-link"
-            href={hrefForPage(page) as Route}
-            aria-label={`Page ${page}`}
-            aria-current={page === currentPage ? 'page' : undefined}
+            href={hrefForPage(item.page) as Route}
+            aria-label={`Page ${item.page}`}
+            aria-current={item.page === currentPage ? 'page' : undefined}
           >
-            {page}
+            {item.page}
           </Link>
         ))}
       </span>
@@ -42,4 +44,24 @@ export default function Pagination({
       )}
     </nav>
   )
+}
+
+type PaginationItem = { kind: 'page'; page: number } | { kind: 'ellipsis'; key: string }
+
+function paginationItems(currentPage: number, totalPages: number): PaginationItem[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => ({ kind: 'page', page: index + 1 }))
+
+  const visible = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1])
+  if (currentPage <= 3) [2, 3, 4].forEach((page) => visible.add(page))
+  if (currentPage >= totalPages - 2) [totalPages - 3, totalPages - 2, totalPages - 1].forEach((page) => visible.add(page))
+  const pages = [...visible].filter((page) => page >= 1 && page <= totalPages).sort((left, right) => left - right)
+  const items: PaginationItem[] = []
+  for (const page of pages) {
+    const previous = items.at(-1)
+    if (previous?.kind === 'page' && page - previous.page > 1) {
+      items.push({ kind: 'ellipsis', key: `ellipsis-${previous.page}-${page}` })
+    }
+    items.push({ kind: 'page', page })
+  }
+  return items
 }

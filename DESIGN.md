@@ -81,13 +81,13 @@ tint; pure white and pure black are not used.
 | `--surface` | `oklch(0.995 0.004 248)` | Primary work surface |
 | `--surface-subtle` | `oklch(0.95 0.01 248)` | Sidebar, alt rows, quiet controls |
 | `--surface-raised` | `oklch(0.985 0.006 248)` | Menus and sticky controls |
-| `--border` | `oklch(0.855 0.014 248)` | Rules and control borders |
-| `--border-strong` | `oklch(0.70 0.025 248)` | Selected and active boundaries |
+| `--border` | `oklch(0.58 0.025 248)` | Rules and control borders, ≥3:1 on adjacent surfaces |
+| `--border-strong` | `oklch(0.54 0.035 248)` | Selected and active boundaries, ≥3:1 |
 | `--accent` | `oklch(0.48 0.13 252)` | Primary action and current selection |
 | `--accent-hover` | `oklch(0.42 0.13 252)` | Primary hover |
 | `--accent-active` | `oklch(0.37 0.12 252)` | Primary pressed state |
 | `--accent-foreground` | `oklch(0.98 0.006 248)` | Text on accent |
-| `--focus` | `oklch(0.66 0.13 252)` | Focus ring |
+| `--focus` | `oklch(0.58 0.13 252)` | Focus ring, ≥3:1 on adjacent surfaces |
 | `--success` | `oklch(0.43 0.12 155)` | Confirmed positive state |
 | `--success-subtle` | `oklch(0.94 0.04 155)` | Success background |
 | `--warning` | `oklch(0.48 0.12 72)` | Retry, degraded, needs review |
@@ -108,13 +108,13 @@ tint; pure white and pure black are not used.
 | `--surface` | `oklch(0.21 0.014 248)` | Primary work surface |
 | `--surface-subtle` | `oklch(0.255 0.018 248)` | Sidebar, alt rows, quiet controls |
 | `--surface-raised` | `oklch(0.285 0.02 248)` | Menus and sticky controls |
-| `--border` | `oklch(0.35 0.022 248)` | Rules and control borders |
-| `--border-strong` | `oklch(0.50 0.035 248)` | Selected and active boundaries |
+| `--border` | `oklch(0.55 0.035 248)` | Rules and control borders, ≥3:1 on adjacent surfaces |
+| `--border-strong` | `oklch(0.61 0.04 248)` | Selected and active boundaries, ≥3:1 |
 | `--accent` | `oklch(0.72 0.12 252)` | Primary action and current selection |
 | `--accent-hover` | `oklch(0.78 0.11 252)` | Primary hover |
 | `--accent-active` | `oklch(0.66 0.12 252)` | Primary pressed state |
 | `--accent-foreground` | `oklch(0.17 0.012 248)` | Text on accent |
-| `--focus` | `oklch(0.76 0.13 252)` | Focus ring |
+| `--focus` | `oklch(0.65 0.13 252)` | Focus ring, ≥3:1 on adjacent surfaces |
 | `--success` | `oklch(0.72 0.12 155)` | Confirmed positive state |
 | `--success-subtle` | `oklch(0.28 0.055 155)` | Success background |
 | `--warning` | `oklch(0.78 0.12 82)` | Retry, degraded, needs review |
@@ -185,7 +185,9 @@ before paint. System leaves the attribute absent and CSS follows
 - Current navigation uses accent-tinted background, visible text, and
   `aria-current="page"`. Keyboard focus always uses the shared focus ring.
 - At `960px`, navigation becomes a horizontal top region. It may scroll at
-  narrow widths and remains keyboard reachable.
+  narrow widths and remains keyboard reachable. Route changes center the active
+  destination with reduced-motion-aware scrolling; explicit previous and next
+  scroll controls make overflow visible without a decorative edge fade.
 
 ### Buttons
 
@@ -202,6 +204,8 @@ before paint. System leaves the attribute absent and CSS follows
   uses the shared 2px ring. Error pairs danger border with visible recovery
   copy. Disabled uses subtle surface and muted text.
 - Labels are always visible. Placeholder text never replaces a label.
+- Invalid controls set `aria-invalid="true"`, reference a visible `FieldError`
+  with `aria-describedby`, and use a danger border and danger focus ring.
 
 ### Badges
 
@@ -237,6 +241,9 @@ before paint. System leaves the attribute absent and CSS follows
   page links announce `Page N`, and the active page uses `aria-current="page"`.
 - Unavailable steps remain visible with `aria-disabled="true"` and no link.
   Focus and active states match buttons.
+- Large result sets render a bounded window containing first, last, current,
+  and current neighbors with non-interactive ellipses. DOM size does not grow
+  with the page count.
 
 ### Surfaces
 

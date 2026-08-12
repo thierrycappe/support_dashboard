@@ -14,6 +14,7 @@ describe('product shell', () => {
   beforeEach(() => {
     document.documentElement.removeAttribute('data-theme')
     document.cookie = 'support-theme=; Max-Age=0; Path=/'
+    Element.prototype.scrollIntoView = vi.fn()
   })
 
   it('exposes ordered navigation landmarks and the active destination', () => {
@@ -33,6 +34,26 @@ describe('product shell', () => {
     render(<NavLinks pathname="/" isAdmin={false} />)
     expect(screen.queryByRole('link', { name: 'Teams' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Access' })).not.toBeInTheDocument()
+  })
+
+  it('reveals a deep active destination and exposes explicit mobile scroll controls', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    render(<NavLinks pathname="/users" isAdmin />)
+
+    expect(screen.getByRole('link', { name: 'Access' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Access' })).toHaveAttribute('aria-current', 'page')
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'nearest', inline: 'center' })
+    expect(screen.getByRole('button', { name: 'Scroll navigation left' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Scroll navigation right' })).toBeVisible()
+  })
+
+  it('centers the new active destination after a pathname change', () => {
+    const { rerender } = render(<NavLinks pathname="/deliveries" isAdmin />)
+    vi.mocked(Element.prototype.scrollIntoView).mockClear()
+
+    rerender(<NavLinks pathname="/users" isAdmin />)
+
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: 'auto', block: 'nearest', inline: 'center' })
   })
 
   it('renders the authenticated shell as server content with a skip link and main landmark', async () => {
