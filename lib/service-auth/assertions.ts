@@ -12,6 +12,11 @@ export interface ServicePrincipal {
   scopes: ServiceScope[]
 }
 
+export class AssertionPersistenceError extends Error {
+  readonly code = 'ASSERTION_PERSISTENCE'
+  constructor() { super('Assertion persistence failed'); this.name = 'AssertionPersistenceError' }
+}
+
 const CLOCK_TOLERANCE_SECONDS = 5
 const MAX_ASSERTION_LIFETIME_SECONDS = 60
 const DEFAULT_REPLAY_CLEANUP_LIMIT = 100
@@ -54,7 +59,9 @@ export async function verifyClientAssertion({
     const scopes = parseScopes(payload.scope)
     await recordReplay({ db, credentialId: credential.id, jti: payload.jti, expiresAt: new Date(payload.exp * 1000), now })
     return { appId: credential.sourceAppId, credentialId: credential.id, scopes }
-  } catch {
+  } catch (error) {
+    if (error instanceof AssertionPersistenceError) throw error
+    if (hasSqlState(error)) throw new AssertionPersistenceError()
     throw new Error('Invalid client assertion')
   }
 }
@@ -137,4 +144,13 @@ function parseScopes(value: unknown): ServiceScope[] {
     throw new Error('invalid scope')
   }
   return [...new Set(raw as ServiceScope[])]
+}
+
+function hasSqlState(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
+    if (typeof (current as { code?: unknown }).code === 'string' && /^\d{5}$/.test((current as { code: string }).code)) return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
 }
