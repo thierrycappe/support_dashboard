@@ -11,11 +11,11 @@ import {
   supportSettings,
 } from '@/lib/db/schema'
 import { getPushoverConfig } from '@/lib/notifications/pushover'
-import { encryptChannelConfig, loadChannelKeyring } from '@/lib/routing/crypto'
+import { decryptChannelConfig, encryptChannelConfig, loadChannelKeyring, type ChannelKeyring } from '@/lib/routing/crypto'
+import { LEGACY_PUSHOVER_BRIDGE_RETIRED_MARKER, lockRoutingCutover } from '@/lib/routing/cutover'
 
 type Env = Record<string, string | undefined>
-const CUTOVER_LOCK = 'support-tower-routing-cutover'
-const RETIRED_MARKER = 'legacy_pushover_bridge_retired_at'
+const MAX_SERIALIZABLE_ATTEMPTS = 3
 
 export interface BackfillSummary {
   centralGroupsCreated: number
@@ -40,16 +40,23 @@ export async function backfillSupportRouting({
   const keyring = pushover ? loadChannelKeyring(env) : null
   if (pushover && !keyring) throw new Error('Channel encryption keyring is required for Pushover cutover')
 
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${CUTOVER_LOCK}))`)
+  for (let attempt = 1; attempt <= MAX_SERIALIZABLE_ATTEMPTS; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+    await lockRoutingCutover(tx)
     await onRoutingLock?.()
     const now = new Date()
     const summary: BackfillSummary = {
       centralGroupsCreated: 0, channelsCreated: 0, policiesCreated: 0, appsChanged: 0, bridgeRetired: false,
     }
+    const retired = await tx.select({ key: supportSettings.key }).from(supportSettings)
+      .where(sql`${supportSettings.key} = ${LEGACY_PUSHOVER_BRIDGE_RETIRED_MARKER}`).for('update').limit(1)
+    const bridgeWasAlreadyRetired = retired.length > 0
     const centralGroup = await centralFallbackGroup(tx, now, summary)
-    const channel = pushover && keyring
-      ? await centralPushoverChannel(tx, centralGroup.id, pushover, keyring, now, summary)
+    const mustValidateCentralRoute = Boolean(pushover) || bridgeWasAlreadyRetired
+    const routeKeyring = keyring ?? (bridgeWasAlreadyRetired ? loadChannelKeyring(env) : null)
+    const channel = mustValidateCentralRoute
+      ? await centralPushoverChannel(tx, centralGroup, pushover, routeKeyring, now, summary)
       : null
     const apps = await tx.select({ id: sourceApps.id, technicalGroupId: sourceApps.technicalGroupId, credentialMode: sourceApps.credentialMode })
       .from(sourceApps).for('update')
@@ -57,16 +64,17 @@ export async function backfillSupportRouting({
     for (const app of apps) {
       const policy = await tx.select({ id: appNotificationPolicies.id }).from(appNotificationPolicies)
         .where(sql`${appNotificationPolicies.sourceAppId} = ${app.id}`).limit(1)
-      const appChanged = app.technicalGroupId === null || app.credentialMode !== 'LEGACY_BEARER'
-      if (appChanged) {
-        await tx.update(sourceApps).set({ technicalGroupId: app.technicalGroupId ?? centralGroup.id, credentialMode: 'LEGACY_BEARER', updatedAt: now })
-          .where(sql`${sourceApps.id} = ${app.id}`)
-        summary.appsChanged += 1
-        await appendAuditEvent({
-          db: tx, actorId, correlationId: `routing-backfill:${app.id}`, reason: 'legacy routing cutover',
-          action: 'SUPPORT_ROUTING_BACKFILLED', subjectType: 'source_app', subjectId: app.id,
-          metadata: { assignedCentralFallback: app.technicalGroupId === null, credentialMode: 'LEGACY_BEARER' }, now,
+      const changes: string[] = []
+      if (!bridgeWasAlreadyRetired && app.technicalGroupId === null) changes.push('assignment')
+      if (!bridgeWasAlreadyRetired && app.credentialMode !== 'LEGACY_BEARER') changes.push('mode')
+      if (channel && !policy[0]) changes.push('policy')
+      if (changes.includes('assignment') || changes.includes('mode')) {
+        await tx.update(sourceApps).set({
+          technicalGroupId: app.technicalGroupId ?? centralGroup.id,
+          credentialMode: 'LEGACY_BEARER',
+          updatedAt: now,
         })
+          .where(sql`${sourceApps.id} = ${app.id}`)
       }
       // Policies make the resolver choose database routing. Do not install
       // them until the encrypted central target exists, otherwise a partial
@@ -77,42 +85,92 @@ export async function backfillSupportRouting({
         })
         summary.policiesCreated += 1
       }
+      if (changes.length > 0) {
+        summary.appsChanged += 1
+        await appendAuditEvent({
+          db: tx, actorId, correlationId: `routing-backfill:${actorId}:${app.id}`, reason: 'legacy routing cutover',
+          action: 'SUPPORT_ROUTING_BACKFILLED', subjectType: 'source_app', subjectId: app.id,
+          metadata: {
+            changes,
+            assignedCentralFallback: changes.includes('assignment'),
+            credentialMode: changes.includes('mode') ? 'LEGACY_BEARER' : undefined,
+            policyInstalled: changes.includes('policy'),
+          }, now,
+        })
+      }
     }
 
-    if (channel) {
-      const retired = await tx.insert(supportSettings).values({ key: RETIRED_MARKER, value: now.toISOString(), updatedAt: now })
+    if (channel && !bridgeWasAlreadyRetired) {
+      const marker = await tx.insert(supportSettings).values({ key: LEGACY_PUSHOVER_BRIDGE_RETIRED_MARKER, value: now.toISOString(), updatedAt: now })
         .onConflictDoNothing().returning({ key: supportSettings.key })
-      summary.bridgeRetired = retired.length > 0
+      summary.bridgeRetired = marker.length > 0
     }
     return summary
-  }, { isolationLevel: 'serializable', accessMode: 'read write' })
+      }, { isolationLevel: 'serializable', accessMode: 'read write' })
+    } catch (error) {
+      if (attempt === MAX_SERIALIZABLE_ATTEMPTS || !isRetryableTransactionError(error)) throw error
+      await new Promise((resolve) => setTimeout(resolve, attempt * 10))
+    }
+  }
+  throw new Error('Backfill retry exhausted')
 }
 
-async function centralFallbackGroup(tx: DbTransaction, now: Date, summary: BackfillSummary): Promise<{ id: string }> {
-  const existing = await tx.select({ id: supportGroups.id }).from(supportGroups)
+function isRetryableTransactionError(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
+    const code = (current as { code?: unknown }).code
+    if (code === '40001' || code === '23505') return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
+}
+
+async function centralFallbackGroup(tx: DbTransaction, now: Date, summary: BackfillSummary): Promise<{ id: string; status: string }> {
+  const existing = await tx.select({ id: supportGroups.id, status: supportGroups.status }).from(supportGroups)
     .where(sql`${supportGroups.isCentralFallback} = true`).for('update').limit(1)
   if (existing[0]) return existing[0]
   const id = nanoid()
   await tx.insert(supportGroups).values({ id, name: 'Central support', status: 'ACTIVE', isCentralFallback: true, createdAt: now, updatedAt: now })
   summary.centralGroupsCreated += 1
-  return { id }
+  return { id, status: 'ACTIVE' }
 }
 
 async function centralPushoverChannel(
   tx: DbTransaction,
-  groupId: string,
-  config: { appToken: string; userKey: string },
-  keyring: NonNullable<ReturnType<typeof loadChannelKeyring>>,
+  group: { id: string; status: string },
+  config: { appToken: string; userKey: string } | null,
+  keyring: ChannelKeyring | null,
   now: Date,
   summary: BackfillSummary,
 ): Promise<{ id: string }> {
-  const existing = await tx.select({ id: notificationChannels.id }).from(notificationChannels)
-    .where(sql`${notificationChannels.groupId} = ${groupId} and ${notificationChannels.name} = 'Central Pushover'`).for('update').limit(1)
-  if (existing[0]) return existing[0]
+  if (group.status !== 'ACTIVE') throw new Error('Central support group is not active')
+  const existing = await tx.select({
+    id: notificationChannels.id, type: notificationChannels.type, status: notificationChannels.status,
+    encryptedConfig: notificationChannels.encryptedConfig, configNonce: notificationChannels.configNonce,
+    configAuthTag: notificationChannels.configAuthTag, keyVersion: notificationChannels.keyVersion,
+  }).from(notificationChannels)
+    .where(sql`${notificationChannels.groupId} = ${group.id} and ${notificationChannels.name} = 'Central Pushover'`).for('update').limit(1)
+  if (existing[0]) {
+    if (existing[0].type !== 'PUSHOVER' || existing[0].status !== 'ACTIVE') {
+      throw new Error('Central Pushover channel is not active and usable')
+    }
+    if (!keyring || !Number.isInteger(existing[0].keyVersion) || existing[0].keyVersion < 1 || existing[0].keyVersion > 2_147_483_647) {
+      throw new Error('Central Pushover channel cannot be verified')
+    }
+    const decrypted = decryptChannelConfig({
+      ciphertext: existing[0].encryptedConfig, nonce: existing[0].configNonce,
+      authTag: existing[0].configAuthTag, keyVersion: `v${existing[0].keyVersion}`,
+    }, { channelId: existing[0].id, type: 'PUSHOVER' }, keyring)
+    if (decrypted.type !== 'PUSHOVER' || !decrypted.appToken.trim() || !decrypted.userKey.trim()) {
+      throw new Error('Central Pushover channel is not usable')
+    }
+    return { id: existing[0].id }
+  }
+  if (!config || !keyring) throw new Error('Central Pushover channel is required for retired bridge')
   const id = nanoid()
   const encrypted = encryptChannelConfig({ type: 'PUSHOVER', ...config }, { channelId: id, type: 'PUSHOVER' }, keyring)
   await tx.insert(notificationChannels).values({
-    id, groupId, name: 'Central Pushover', type: 'PUSHOVER', status: 'ACTIVE',
+    id, groupId: group.id, name: 'Central Pushover', type: 'PUSHOVER', status: 'ACTIVE',
     encryptedConfig: encrypted.ciphertext, configNonce: encrypted.nonce, configAuthTag: encrypted.authTag,
     keyVersion: Number(encrypted.keyVersion.slice(1)), recipientDisplay: 'Pushover recipient', redactedDestination: 'Pushover recipient',
     includeReporterContext: false, createdAt: now, updatedAt: now,

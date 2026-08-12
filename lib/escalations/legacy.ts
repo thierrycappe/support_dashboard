@@ -1,10 +1,11 @@
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { getDb, type Db, type DbTransaction } from '@/lib/db'
 import { appNotificationPolicies, sourceApps, supportSettings } from '@/lib/db/schema'
 import { canonicalEscalationDigest, legacyPayloadToCommand } from '@/lib/escalations/contract'
 import { acceptEscalation, type IntakeDependencies, type IntakeResult } from '@/lib/escalations/intake'
 import { resolveTargetsFromDb } from '@/lib/escalations/repository'
 import { feedbackIngestSchema, type FeedbackIngestPayload, type IngestResult } from '@/lib/feedback/ingest'
+import { LEGACY_PUSHOVER_BRIDGE_RETIRED_MARKER, lockRoutingCutover } from '@/lib/routing/cutover'
 
 type Env = Record<string, string | undefined>
 
@@ -43,12 +44,12 @@ export function legacyResult(result: IntakeResult): IngestResult {
   return { appId: result.appId, ticketId: result.ticketId, created: result.result === 'created' }
 }
 
-async function resolveLegacyTargets(tx: DbTransaction, appId: string, priority: Parameters<typeof resolveTargetsFromDb>[2], env: Env) {
+export async function resolveLegacyTargets(tx: DbTransaction, appId: string, priority: Parameters<typeof resolveTargetsFromDb>[2], env: Env) {
   // Target selection and the routing backfill share this transaction-scoped
   // lock. A material event therefore observes exactly one cutover state.
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtext('support-tower-routing-cutover'))`)
+  await lockRoutingCutover(tx)
   const retired = await tx.select({ key: supportSettings.key }).from(supportSettings)
-    .where(eq(supportSettings.key, 'legacy_pushover_bridge_retired_at')).limit(1)
+    .where(eq(supportSettings.key, LEGACY_PUSHOVER_BRIDGE_RETIRED_MARKER)).limit(1)
   const policies = await tx.select({ id: appNotificationPolicies.id }).from(appNotificationPolicies)
     .where(eq(appNotificationPolicies.sourceAppId, appId)).limit(1)
   const hasLegacyBridge = Boolean(env.PUSHOVER_APP_TOKEN?.trim() && env.PUSHOVER_USER_KEY?.trim())
