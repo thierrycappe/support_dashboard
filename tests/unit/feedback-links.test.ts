@@ -32,6 +32,18 @@ describe('feedback link helpers', () => {
     ).toBe('https://pitchme-pearl.vercel.app/admin/bugs/bug-1?tab=details#comments')
   })
 
+  it('treats bracketed IPv6 loopback ticket URLs as localhost', () => {
+    expect(
+      normalizeSourceTicketUrl(
+        'http://[::1]:3000/admin/bugs/bug-1?tab=details',
+        'https://pitchme-pearl.vercel.app',
+      ),
+    ).toBe('https://pitchme-pearl.vercel.app/admin/bugs/bug-1?tab=details')
+    expect(
+      normalizeSourceTicketUrl('https://[::1]/admin/bugs/bug-1', null),
+    ).toBeNull()
+  })
+
   it('drops localhost ticket URLs when there is no public base URL', () => {
     expect(
       normalizeSourceTicketUrl('http://127.0.0.1:3000/admin/bugs/bug-1', null),

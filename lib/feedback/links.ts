@@ -4,7 +4,8 @@ const DEFAULT_SOURCE_APP_PUBLIC_URLS: Record<string, string> = {
 }
 
 function isLocalhostHostname(hostname: string): boolean {
-  return LOCALHOST_NAMES.has(hostname) || hostname.startsWith('127.')
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return LOCALHOST_NAMES.has(normalized) || normalized.startsWith('127.')
 }
 
 export function normalizeSourceTicketUrl(

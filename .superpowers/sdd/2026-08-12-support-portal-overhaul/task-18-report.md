@@ -138,3 +138,17 @@ Browser verification was intentionally deferred to root as requested.
 The fix intentionally leaves Task 19 work unstaged. Browser verification is
 coordinated at the parent task level because the shared application route is
 being rebuilt concurrently.
+
+## Sol Re-review Fix
+
+- Normalized bracketed IPv6 hostnames before localhost checks. Both
+  `http://[::1]` rewrite through a trusted public source base and
+  `https://[::1]` is rejected as non-public.
+
+| Gate | Result |
+|---|---|
+| Focused source-link, queue component, and design-contract tests | 18 tests passed |
+| Live PostgreSQL queue and migration tests | 13 tests passed |
+| `npm run typecheck` | passed |
+| `npm run lint` | blocked by concurrent Task 19's pre-existing raw internal `<a>` in `tests/components/ui-components.test.tsx` |
+| `git diff --check` | passed |
