@@ -13,7 +13,7 @@ export const retryDelaysMs = [
   12 * 60 * 60_000,
 ] as const
 
-const LEASE_DURATION_MS = 60_000
+export const DEFAULT_LEASE_DURATION_MS = 60_000
 const MAX_RETRY_AFTER_MS = 60 * 60_000
 
 export interface ClaimedDelivery {
@@ -29,13 +29,15 @@ export async function claimLegacyDeliveries({
   limit,
   now,
   workerId,
+  leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
 }: {
   db?: Db
   limit: number
   now: Date
   workerId: string
+  leaseDurationMs?: number
 }): Promise<ClaimedDelivery[]> {
-  const leaseUntil = new Date(now.getTime() + LEASE_DURATION_MS)
+  const leaseUntil = new Date(now.getTime() + leaseDurationMs)
   const result = await db.execute<ClaimedDelivery & Record<string, unknown>>(sql`
     with candidates as (
       select id
@@ -61,6 +63,29 @@ export async function claimLegacyDeliveries({
        outbox.attempt_count as "attemptCount"
   `)
   return result.rows
+}
+
+export async function renewDeliveryLease({
+  db = getDb(),
+  id,
+  workerId,
+  now,
+  leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
+}: {
+  db?: Db
+  id: string
+  workerId: string
+  now: Date
+  leaseDurationMs?: number
+}): Promise<boolean> {
+  const leaseUntil = new Date(now.getTime() + leaseDurationMs)
+  const result = await db.execute<{ id: string }>(sql`
+    update delivery_outbox
+       set lease_expires_at = ${leaseUntil}, updated_at = ${now}
+     where id = ${id} and status = 'LEASED' and lease_token = ${workerId}
+     returning id
+  `)
+  return result.rows.length === 1
 }
 
 export async function finishDelivery({
@@ -152,16 +177,20 @@ export async function releaseLegacyConfigurationNotReady({
   id,
   workerId,
   now,
+  nextAttemptAt = new Date(now.getTime() + jitteredDelay(id, retryDelaysMs[0])),
 }: {
   db?: Db
   id: string
   workerId: string
   now: Date
+  nextAttemptAt?: Date
 }): Promise<void> {
   await db.transaction(async (tx) => {
     const released = await tx.execute<{ targetKey: string }>(sql`
       update delivery_outbox
-         set status = 'PENDING', lease_token = null, lease_expires_at = null, updated_at = ${now}
+         set status = 'PENDING', lease_token = null, lease_expires_at = null,
+             next_attempt_at = ${nextAttemptAt},
+             updated_at = ${now}
        where id = ${id} and lease_token = ${workerId} and status = 'LEASED'
        returning target_key as "targetKey"
     `)

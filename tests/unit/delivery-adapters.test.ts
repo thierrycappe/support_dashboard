@@ -72,7 +72,49 @@ describe('delivery adapters', () => {
       config: { type: 'PUSHOVER', appToken: 'app-token', userKey: 'user-key' },
       idempotencyKey: 'event-1', fetchImpl,
     })
-    expect(String((capturedInit as RequestInit).body)).not.toContain('reporter@example.test')
+    const form = new URLSearchParams(String((capturedInit as RequestInit).body))
+    expect(form.get('message')).not.toContain('reporter@example.test')
+    expect(form.get('message')).not.toContain('Elodie')
+  })
+
+  it.each([
+    ['email', (fetchImpl: typeof fetch) => sendEmailDelivery({ event, config: { type: 'EMAIL', to: ['ops@example.test'] }, idempotencyKey: 'event-1', env: { RESEND_API_KEY: 'key', RESEND_FROM: 'support@example.test' }, fetchImpl, timeoutMs: 10 })],
+    ['pushover', (fetchImpl: typeof fetch) => sendPushoverDelivery({ event, config: { type: 'PUSHOVER', appToken: 'token', userKey: 'user' }, idempotencyKey: 'event-1', fetchImpl, timeoutMs: 10 })],
+    ['webhook', (fetchImpl: typeof fetch) => sendWebhookDelivery({ event, config: { type: 'WEBHOOK', url: 'https://public.example.test/hook', signingSecret: 'secret' }, idempotencyKey: 'event-1', fetchImpl, timeoutMs: 10, validateTarget: async () => ({ url: new URL('https://public.example.test/hook'), addresses: ['93.184.216.34'], dispatcher: { close: async () => {} } } as never) })],
+  ])('returns a sanitized retryable timeout for a hung %s provider', async (_, send) => {
+    const result = await send(((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })) as typeof fetch)
+
+    expect(result).toMatchObject({ result: 'retryable', providerStatus: null, sanitizedError: 'PROVIDER_TIMEOUT' })
+  })
+
+  it('makes unsafe webhook targets permanent and transient DNS failures retryable', async () => {
+    const base = {
+      event, config: { type: 'WEBHOOK' as const, url: 'https://public.example.test/hook', signingSecret: 'test-secret' }, idempotencyKey: 'event-1',
+    }
+    await expect(sendWebhookDelivery({
+      ...base,
+      validateTarget: async () => { throw new Error('Unsafe webhook target') },
+    })).resolves.toMatchObject({ result: 'permanent', sanitizedError: 'UNSAFE_WEBHOOK_TARGET' })
+    await expect(sendWebhookDelivery({
+      ...base,
+      validateTarget: async () => { throw new Error('ENOTFOUND') },
+    })).resolves.toMatchObject({ result: 'retryable', sanitizedError: 'DNS_LOOKUP_FAILED' })
+  })
+
+  it('does not let webhook dispatcher cleanup abort a delivery sweep', async () => {
+    await expect(sendWebhookDelivery({
+      event,
+      config: { type: 'WEBHOOK', url: 'https://public.example.test/hook', signingSecret: 'test-secret' },
+      idempotencyKey: 'event-1',
+      fetchImpl: (async () => new Response('', { status: 202 })) as typeof fetch,
+      validateTarget: async () => ({
+        url: new URL('https://public.example.test/hook'),
+        addresses: ['93.184.216.34'],
+        dispatcher: { close: async () => { throw new Error('close failed') } },
+      } as never),
+    })).resolves.toMatchObject({ result: 'sent', providerStatus: 202 })
   })
 
   it('sends Resend-compatible email with a durable idempotency key', async () => {

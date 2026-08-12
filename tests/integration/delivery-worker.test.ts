@@ -1,3 +1,4 @@
+import { createServer } from 'node:http'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql, type SQL } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
@@ -99,23 +100,72 @@ describe('runDeliverySweep', () => {
     expect(await attempt('job-database')).toMatchObject({ resultClass: 'CONFIGURATION_NOT_READY' })
   })
 
-  it('begins 500 eligible legacy jobs inside 60 seconds through bounded immediate batches', async () => {
+  it('releases an unconfigured legacy target into the future so a drain does not churn it', async () => {
+    await seedOutbox('job-unconfigured')
+
+    const first = await runDeliverySweep({ db: getDb(), now, workerId: 'worker', legacyConfig: null })
+    const row = await outbox('job-unconfigured')
+    const second = await runDeliverySweep({ db: getDb(), now, workerId: 'worker', legacyConfig: null })
+
+    expect(first).toMatchObject({ started: 0, configurationNotReady: 1 })
+    expect(row.status).toBe('PENDING')
+    expect(asDate(row.nextAttemptAt).getTime()).toBeGreaterThan(now.getTime())
+    expect(second).toMatchObject({ claimed: 0, started: 0 })
+  })
+
+  it('renews a short lease while a slow provider is in flight so another worker cannot duplicate it', async () => {
+    await seedOutbox('job-slow-lease')
+    const started = deferred<void>()
+    let sends = 0
+    const base = new Date()
+    const first = runDeliverySweep({
+      db: getDb(), now: base, workerId: 'slow-worker', legacyConfig: legacyConfig(),
+      leaseDurationMs: 50, leaseRenewalMs: 10,
+      send: async () => {
+        sends += 1
+        started.resolve()
+        await sleep(120)
+        return sent()
+      },
+    })
+    await started.promise
+    await sleep(70)
+    const currentLease = await outbox('job-slow-lease')
+    expect(asDate(currentLease.leaseExpiresAt!).getTime()).toBeLessThan(base.getTime() + 500)
+    await runDeliverySweep({
+      db: getDb(), now: new Date(), workerId: 'overlap-worker', legacyConfig: legacyConfig(),
+      leaseDurationMs: 50, leaseRenewalMs: 10,
+      send: async () => {
+        sends += 1
+        return sent()
+      },
+    })
+    await first
+
+    expect(sends).toBe(1)
+    expect((await outbox('job-slow-lease')).status).toBe('SENT')
+  })
+
+  it('begins 500 actual local-provider dispatches inside 60 seconds with bounded concurrency', async () => {
     for (let index = 0; index < 500; index += 1) {
       await seedOutbox(`job-drain-${index}`, { generation: index + 1 })
     }
+    const provider = await delayedProvider(50)
     const startedAt = Date.now()
-    const result = await drainImmediateDeliveries({
-      batchSize: 100,
-      maxJobs: 500,
-      maxDurationMs: 45_000,
-      sweep: ({ limit }) => runDeliverySweep({
-        db: getDb(), limit, now, workerId: `drain-${Math.random()}`,
-        legacyConfig: legacyConfig(),
-        send: async () => ({ result: 'sent', providerStatus: 202, providerMessageId: 'local-provider', retryAfterMs: null, sanitizedError: null }),
-      }),
-    })
+    const result = await drainImmediateDeliveries({ batchSize: 100, maxJobs: 500, maxDurationMs: 45_000, sweep: ({ limit }) => runDeliverySweep({
+      db: getDb(), limit, now: new Date(), workerId: `drain-${Math.random()}`,
+      legacyConfig: legacyConfig(), concurrency: 25,
+      send: async () => {
+        await fetch(provider.url)
+        return sent('local-provider')
+      },
+    }) })
+    await provider.close()
+
     expect(result).toEqual({ started: 500, batches: 5 })
-    expect(Date.now() - startedAt).toBeLessThan(60_000)
+    expect(provider.startedAt).toHaveLength(500)
+    expect(Math.max(...provider.startedAt) - startedAt).toBeLessThan(60_000)
+    expect(Math.max(...provider.startedAt) - startedAt).toBeLessThan(2_000)
   })
 })
 
@@ -170,9 +220,9 @@ async function seedOutbox(id: string, options: {
   `)
 }
 
-async function outbox(id: string): Promise<{ status: string; attemptCount: number; nextAttemptAt: Date }> {
-  const result = await getDb().execute<{ status: string; attemptCount: number; nextAttemptAt: Date }>(sql`
-    select status::text as status, attempt_count as "attemptCount", next_attempt_at as "nextAttemptAt"
+async function outbox(id: string): Promise<{ status: string; attemptCount: number; nextAttemptAt: Date; leaseExpiresAt: Date | null }> {
+  const result = await getDb().execute<{ status: string; attemptCount: number; nextAttemptAt: Date; leaseExpiresAt: Date | null }>(sql`
+    select status::text as status, attempt_count as "attemptCount", next_attempt_at as "nextAttemptAt", lease_expires_at as "leaseExpiresAt"
       from delivery_outbox where id = ${id}
   `)
   return result.rows[0]!
@@ -198,4 +248,34 @@ async function scalar(query: SQL): Promise<number> {
 
 function asDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value)
+}
+
+function sent(providerMessageId: string | null = null): DeliveryAdapterResult {
+  return { result: 'sent', providerStatus: 202, providerMessageId, retryAfterMs: null, sanitizedError: null }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
+async function delayedProvider(delayMs: number): Promise<{ url: string; startedAt: number[]; close(): Promise<void> }> {
+  const startedAt: number[] = []
+  const server = createServer((_request, response) => {
+    startedAt.push(Date.now())
+    setTimeout(() => { response.statusCode = 202; response.end() }, delayMs)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Delayed provider did not bind')
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    startedAt,
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  }
 }

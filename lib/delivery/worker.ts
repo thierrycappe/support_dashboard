@@ -2,9 +2,11 @@ import { sendPushoverDelivery } from '@/lib/delivery/adapters/pushover'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
 import {
   claimLegacyDeliveries,
+  DEFAULT_LEASE_DURATION_MS,
   finishDelivery,
   recordConfigurationNotReady,
   releaseLegacyConfigurationNotReady,
+  renewDeliveryLease,
 } from '@/lib/delivery/repository'
 import type { DeliveryEvent } from '@/lib/delivery/types'
 import { getDb, type Db } from '@/lib/db'
@@ -33,6 +35,9 @@ export async function runDeliverySweep({
   workerId = 'delivery-worker',
   legacyConfig = defaultLegacyConfig(),
   send = sendPushoverDelivery,
+  concurrency = 20,
+  leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
+  leaseRenewalMs = Math.max(1, Math.floor(leaseDurationMs / 3)),
 }: {
   db?: Db
   limit?: number
@@ -40,37 +45,84 @@ export async function runDeliverySweep({
   workerId?: string
   legacyConfig?: { type: 'PUSHOVER'; appToken: string; userKey: string } | null
   send?: LegacyDeliverySender
+  concurrency?: number
+  leaseDurationMs?: number
+  leaseRenewalMs?: number
 } = {}): Promise<DeliverySweepResult> {
   const configurationNotReady = await recordConfigurationNotReady({ db, now, limit })
-  const claimed = await claimLegacyDeliveries({ db, limit, now, workerId })
+  const claimed = await claimLegacyDeliveries({ db, limit, now, workerId, leaseDurationMs })
   const result: DeliverySweepResult = {
     claimed: claimed.length,
-    started: claimed.length,
+    started: 0,
     sent: 0,
     retrying: 0,
     failed: 0,
     configurationNotReady,
   }
 
-  for (const job of claimed) {
+  await runWithConcurrency(claimed, concurrency, async (job) => {
     if (!legacyConfig) {
       await releaseLegacyConfigurationNotReady({ db, id: job.id, workerId, now })
       result.configurationNotReady += 1
-      continue
+      return
     }
 
-    const outcome = await send({
-      event: job.renderedPayload as unknown as DeliveryEvent,
-      config: legacyConfig,
-      idempotencyKey: job.eventKey,
-    })
-    const finalized = await finishDelivery({ db, id: job.id, workerId, now, result: outcome })
-    if (!finalized) continue
-    if (outcome.result === 'sent') result.sent += 1
-    else if (outcome.result === 'permanent') result.failed += 1
-    else result.retrying += 1
-  }
+    result.started += 1
+    const stopRenewal = beginLeaseRenewal({ db, id: job.id, workerId, leaseDurationMs, leaseRenewalMs })
+    try {
+      const outcome = await send({
+        event: job.renderedPayload as unknown as DeliveryEvent,
+        config: legacyConfig,
+        idempotencyKey: job.eventKey,
+      })
+      const finalized = await finishDelivery({ db, id: job.id, workerId, now, result: outcome })
+      if (!finalized) return
+      if (outcome.result === 'sent') result.sent += 1
+      else if (outcome.result === 'permanent') result.failed += 1
+      else result.retrying += 1
+    } finally {
+      stopRenewal()
+    }
+  })
   return result
+}
+
+function beginLeaseRenewal({
+  db,
+  id,
+  workerId,
+  leaseDurationMs,
+  leaseRenewalMs,
+}: {
+  db: Db
+  id: string
+  workerId: string
+  leaseDurationMs: number
+  leaseRenewalMs: number
+}): () => void {
+  const timer = setInterval(() => {
+    // A transient renewal failure must not turn an already-dispatched job into
+    // an unhandled rejection. The original lease still protects it until the
+    // next renewal tick, and finalization remains ownership-checked.
+    void renewDeliveryLease({ db, id, workerId, now: new Date(), leaseDurationMs }).catch(() => {})
+  }, Math.max(1, leaseRenewalMs))
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
+
+async function runWithConcurrency<T>(
+  values: T[],
+  concurrency: number,
+  work: (value: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0
+  const workerCount = Math.min(values.length, Math.max(1, concurrency))
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (cursor < values.length) {
+      const value = values[cursor++]
+      if (value) await work(value)
+    }
+  }))
 }
 
 function defaultLegacyConfig(): { type: 'PUSHOVER'; appToken: string; userKey: string } | null {

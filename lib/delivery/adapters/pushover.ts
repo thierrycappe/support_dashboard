@@ -1,4 +1,5 @@
-import { classifiedHttp, errorName, retryAfter } from '@/lib/delivery/adapters/email'
+import { classifiedHttp, retryAfter } from '@/lib/delivery/adapters/email'
+import { fetchWithProviderTimeout, sanitizedTransportError } from '@/lib/delivery/adapters/transport'
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
 import type { DeliveryEvent } from '@/lib/delivery/types'
 
@@ -9,6 +10,7 @@ export async function sendPushoverDelivery(input: {
   config: { type: 'PUSHOVER'; appToken: string; userKey: string }
   idempotencyKey: string
   fetchImpl?: typeof fetch
+  timeoutMs?: number
 }): Promise<DeliveryAdapterResult> {
   const body = new URLSearchParams({
     token: input.config.appToken,
@@ -18,14 +20,14 @@ export async function sendPushoverDelivery(input: {
     url: input.event.portalUrl,
   })
   try {
-    const response = await (input.fetchImpl ?? fetch)(PUSHOVER_API_URL, {
+    const response = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, PUSHOVER_API_URL, {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
         'idempotency-key': input.idempotencyKey,
       },
       body,
-    })
+    }, input.timeoutMs)
     const text = await response.text()
     if (!response.ok) return classifiedHttp(response.status, retryAfter(response))
     return {
@@ -36,15 +38,15 @@ export async function sendPushoverDelivery(input: {
       sanitizedError: null,
     }
   } catch (error) {
-    return { result: 'retryable', providerStatus: null, providerMessageId: null, retryAfterMs: null, sanitizedError: errorName(error) }
+    return { result: 'retryable', providerStatus: null, providerMessageId: null, retryAfterMs: null, sanitizedError: sanitizedTransportError(error) }
   }
 }
 
 function pushoverMessage(event: DeliveryEvent): string {
-  const reporter = event.reporterContext
-    ? `\nReporter: ${event.reporterContext.name ?? 'Unknown'} <${event.reporterContext.email ?? 'unknown'}>`
-    : ''
-  return `${event.appName}\n${event.kind} · ${event.priority}\n${event.portalUrl}${reporter}`
+  // Pushover is the compatibility bridge, not an approved reporter-data
+  // destination. Keep its rendered provider message minimized even if an
+  // upstream payload accidentally contains target-scoped context.
+  return `${event.appName}\n${event.kind} · ${event.priority}\n${event.portalUrl}`
 }
 
 function pushoverRequestId(text: string): string | null {

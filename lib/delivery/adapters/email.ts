@@ -1,5 +1,6 @@
 import type { DeliveryAdapterResult } from '@/lib/delivery/dispatch'
 import type { DeliveryEvent } from '@/lib/delivery/types'
+import { fetchWithProviderTimeout, sanitizedTransportError } from '@/lib/delivery/adapters/transport'
 
 type Env = Record<string, string | undefined>
 
@@ -11,6 +12,7 @@ export async function sendEmailDelivery(input: {
   idempotencyKey: string
   env?: Env
   fetchImpl?: typeof fetch
+  timeoutMs?: number
 }): Promise<DeliveryAdapterResult> {
   const env = input.env ?? process.env
   const apiKey = env.RESEND_API_KEY?.trim()
@@ -23,7 +25,7 @@ export async function sendEmailDelivery(input: {
     text: emailText(input.event),
   })
   try {
-    const response = await (input.fetchImpl ?? fetch)(RESEND_EMAILS_URL, {
+    const response = await fetchWithProviderTimeout(input.fetchImpl ?? fetch, RESEND_EMAILS_URL, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey}`,
@@ -31,7 +33,7 @@ export async function sendEmailDelivery(input: {
         'idempotency-key': input.idempotencyKey,
       },
       body,
-    })
+    }, input.timeoutMs)
     const text = await response.text()
     if (!response.ok) return classifiedHttp(response.status, retryAfter(response))
     return {
@@ -42,7 +44,7 @@ export async function sendEmailDelivery(input: {
       sanitizedError: null,
     }
   } catch (error) {
-    return { result: 'retryable', providerStatus: null, providerMessageId: null, retryAfterMs: null, sanitizedError: errorName(error) }
+    return { result: 'retryable', providerStatus: null, providerMessageId: null, retryAfterMs: null, sanitizedError: sanitizedTransportError(error) }
   }
 }
 
@@ -68,10 +70,6 @@ export function retryAfter(response: Response): number | null {
   if (!value) return null
   const seconds = Number(value)
   return Number.isFinite(seconds) ? Math.min(Math.max(seconds * 1000, 0), 60 * 60_000) : null
-}
-
-export function errorName(error: unknown): string {
-  return error instanceof Error && error.name ? error.name : 'NETWORK_ERROR'
 }
 
 function permanent(reason: string): DeliveryAdapterResult {

@@ -11,6 +11,11 @@ describe('deliver alerts cron', () => {
     expect((await GET(new Request('https://tower/api/cron/deliver-alerts'))).status).toBe(401)
     expect(drainImmediateDeliveries).not.toHaveBeenCalled()
   })
+  it('fails closed when CRON_SECRET is missing', async () => {
+    delete process.env.CRON_SECRET
+    expect((await GET(new Request('https://tower/api/cron/deliver-alerts'))).status).toBe(401)
+    expect(drainImmediateDeliveries).not.toHaveBeenCalled()
+  })
   it('runs the bounded recovery drain', async () => {
     const response = await GET(new Request('https://tower/api/cron/deliver-alerts', { headers: { authorization: 'Bearer cron-secret' } }))
     expect(response.status).toBe(200)
