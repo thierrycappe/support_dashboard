@@ -76,6 +76,10 @@ export function buildLoadPlan(runId: string): LoadPlanItem[] {
   return [...unique, ...unique.slice(0, DUPLICATE_REPLAYS).map((item) => ({ ...item, replay: true }))]
 }
 
+export function cleanupKeysForRun(runId: string): string[] {
+  return buildLoadPlan(runId).slice(0, UNIQUE_SUBMISSIONS).map((item) => item.idempotencyKey)
+}
+
 export function summarizeLoad({
   observations,
   receiptKeys,
@@ -444,9 +448,9 @@ export function persistenceSnapshot(rows: PersistenceRow[], acceptedKeys: Set<st
   return { receiptKeys, validDeliveryKeys, firstAttemptMs }
 }
 
-async function cleanupFixtureRun(pool: Pool, appId: string, runId?: string): Promise<void> {
+export async function cleanupFixtureRun(pool: Pool, appId: string, runId?: string): Promise<void> {
   if (!runId) return
-  const prefix = `load-${runId}-%`
+  const keys = cleanupKeysForRun(runId)
   await pool.query(`
     delete from delivery_attempts attempt
      using delivery_outbox outbox, escalation_events event, feedback_tickets ticket
@@ -454,10 +458,10 @@ async function cleanupFixtureRun(pool: Pool, appId: string, runId?: string): Pro
        and outbox.escalation_event_id = event.id
        and event.ticket_id = ticket.id
        and ticket.source_app_id = $1
-       and ticket.external_id like $2
-  `, [appId, prefix])
-  await pool.query('delete from feedback_tickets where source_app_id = $1 and external_id like $2', [appId, prefix])
-  await pool.query('delete from ingest_receipts where source_app_id = $1 and idempotency_key like $2', [appId, prefix])
+       and ticket.external_id = any($2::text[])
+  `, [appId, keys])
+  await pool.query('delete from feedback_tickets where source_app_id = $1 and external_id = any($2::text[])', [appId, keys])
+  await pool.query('delete from ingest_receipts where source_app_id = $1 and idempotency_key = any($2::text[])', [appId, keys])
   await pool.query('delete from service_rate_limit_buckets where subject = $1', [appId])
 }
 

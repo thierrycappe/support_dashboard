@@ -3,6 +3,8 @@ import {
   assertLoadSummary,
   buildLoadPlan,
   createAccessTokenProvider,
+  cleanupKeysForRun,
+  cleanupFixtureRun,
   percentile,
   persistenceSnapshot,
   resolveLoadTestConfig,
@@ -32,6 +34,31 @@ describe('support escalation burst harness', () => {
     expect(resolveRunId('run-fixed')).toBe('run-fixed')
     expect(() => resolveRunId('run_%')).toThrow('LOAD_TEST_RUN_ID')
     expect(() => resolveRunId('../shared')).toThrow('LOAD_TEST_RUN_ID')
+  })
+
+  it('scopes cleanup to the exact 500 original identities of one run', () => {
+    const keys = cleanupKeysForRun('run-fixed')
+    expect(keys).toHaveLength(500)
+    expect(new Set(keys).size).toBe(500)
+    expect(keys).toContain('load-run-fixed-0000')
+    expect(keys).toContain('load-run-fixed-0499')
+    expect(keys).not.toContain('load-run-fixed-other-0000')
+  })
+
+  it('passes exact run identities to ticket and receipt cleanup queries', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = []
+    await cleanupFixtureRun({
+      query: async (text: string, values: unknown[]) => {
+        calls.push({ text, values })
+        return { rows: [] }
+      },
+    } as never, 'load-test-app', 'run-fixed')
+    expect(calls).toHaveLength(4)
+    expect(calls.slice(0, 3).every((call) => call.text.includes('= any($2::text[])'))).toBe(true)
+    expect(calls.slice(0, 3).every((call) => !call.text.toLowerCase().includes(' like '))).toBe(true)
+    expect(calls.slice(0, 3).every((call) => call.values[0] === 'load-test-app')).toBe(true)
+    expect(calls.slice(0, 3).every((call) => Array.isArray(call.values[1]) && call.values[1]?.length === 500)).toBe(true)
+    expect(calls[3]?.values).toEqual(['load-test-app'])
   })
 
   it('makes absent delivery attempts fail visibly after bounded polling', () => {

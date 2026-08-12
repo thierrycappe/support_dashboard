@@ -7,7 +7,7 @@ controlled idempotent replays, with at most 20 concurrent requests. It refuses
 non-local endpoints without an explicit override, validates the dedicated
 active test application, active credential/private-key thumbprint, and exact
 active database targets before any cleanup or submission, and always cleans a
-validated run.
+validated run by its exact 500 deterministic identities rather than a prefix.
 
 Persistence verification requires one receipt, exactly one escalation event,
 the complete expected target-key set, and a first delivery attempt for every
