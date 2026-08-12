@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
@@ -6,7 +6,7 @@ import { appendAuditEvent } from '@/lib/audit/events'
 import { getDb, type Db, type DbTransaction } from '@/lib/db'
 import type { ServicePrincipal, ServiceScope } from '@/lib/service-auth/assertions'
 import { verifyServiceAccessToken } from '@/lib/service-auth/access-tokens'
-import { invitationDigest, invitationDigestMatches } from '@/lib/service-auth/invitations'
+import { invitationDigestMatches } from '@/lib/service-auth/invitations'
 import { publicJwkThumbprint, validateEd25519PublicJwk } from '@/lib/service-auth/jwk'
 import { consumeRequiredLimits, getTrustedClientIp, serviceRateLimits } from '@/lib/service-auth/rate-limit'
 
@@ -16,6 +16,30 @@ export class RequestBodyError extends Error {
 
 export class UnsupportedMediaTypeError extends Error {}
 export class ServiceAuthorizationError extends Error {}
+export class ServiceConfigurationError extends Error {
+  readonly code = 'SERVICE_CONFIGURATION'
+  constructor() { super('Service endpoint configuration is invalid'); this.name = 'ServiceConfigurationError' }
+}
+
+export interface ServiceEndpointMetadata {
+  issuer: string
+  audience: string
+  tokenEndpoint: string
+  ingestEndpoint: string
+}
+
+export function serviceEndpointMetadata(publicOrigin = process.env.SUPPORT_TOWER_PUBLIC_URL): ServiceEndpointMetadata {
+  try {
+    if (!publicOrigin) throw new Error('missing')
+    const url = new URL(publicOrigin)
+    if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('invalid')
+    const issuer = url.origin
+    const tokenEndpoint = `${issuer}/api/v1/service-tokens`
+    return { issuer, audience: tokenEndpoint, tokenEndpoint, ingestEndpoint: `${issuer}/api/v1/escalations` }
+  } catch {
+    throw new ServiceConfigurationError()
+  }
+}
 
 export function publicError(status: number, code: string, message: string, correlationId: string, headers?: HeadersInit) {
   return NextResponse.json({ error: { code, message, correlationId } }, { status, headers: noStoreHeaders(headers) })
@@ -102,18 +126,25 @@ export async function exchangeEnrollment({
   afterAuditAppended?: () => Promise<void>
 }): Promise<EnrollmentExchangeResult> {
   const jwk = validateEd25519PublicJwk(publicJwk)
-  const digest = invitationDigest(invitation).toString('hex')
   const thumbprint = publicJwkThumbprint(jwk)
   return db.transaction(async (tx) => {
-    const owner = await tx.execute<{ sourceAppId: string } & Record<string, unknown>>(sql`
-      select source_app_id as "sourceAppId" from app_enrollment_grants where id = ${grantId}
+    const grants = await tx.execute<{
+      id: string; sourceAppId: string; tokenDigest: string; expiresAt: Date; consumedAt: Date | null; revokedAt: Date | null
+    } & Record<string, unknown>>(sql`
+      select id, source_app_id as "sourceAppId", token_digest as "tokenDigest", expires_at as "expiresAt",
+             consumed_at as "consumedAt", revoked_at as "revokedAt"
+        from app_enrollment_grants where id = ${grantId} for update
     `)
-    if (!owner.rows[0]) return { kind: 'invalid' }
+    const grant = grants.rows[0]
+    if (!grant) {
+      await consumeRequiredLimits(tx, [{ scope: 'enrollment:ip', subject: clientIp, ...serviceRateLimits.enrollmentIp, now }])
+      return { kind: 'invalid' }
+    }
     const apps = await tx.execute<{
       id: string; appStatus: string; enrollmentStatus: string; credentialMode: string
     } & Record<string, unknown>>(sql`
       select id, status as "appStatus", enrollment_status as "enrollmentStatus", credential_mode as "credentialMode"
-        from source_apps where id = ${owner.rows[0].sourceAppId} for update
+        from source_apps where id = ${grant.sourceAppId} for update
     `)
     const app = apps.rows[0]
     if (!app) return { kind: 'invalid' }
@@ -122,18 +153,10 @@ export async function exchangeEnrollment({
       return { kind: 'invalid' }
     }
     await consumeRequiredLimits(tx, [
-      { scope: 'enrollment:invitation', subject: digest, ...serviceRateLimits.enrollmentInvitation, now },
+      { scope: 'enrollment:invitation', subject: grant.tokenDigest, ...serviceRateLimits.enrollmentInvitation, now },
       { scope: 'enrollment:ip', subject: clientIp, ...serviceRateLimits.enrollmentIp, now },
     ])
-    const grants = await tx.execute<{
-      id: string; sourceAppId: string; tokenDigest: string; expiresAt: Date; consumedAt: Date | null; revokedAt: Date | null
-    } & Record<string, unknown>>(sql`
-      select id, source_app_id as "sourceAppId", token_digest as "tokenDigest", expires_at as "expiresAt",
-             consumed_at as "consumedAt", revoked_at as "revokedAt"
-        from app_enrollment_grants where id = ${grantId} and source_app_id = ${app.id} for update
-    `)
-    const grant = grants.rows[0]
-    if (!grant || !invitationDigestMatches(invitation, grant.tokenDigest) || grant.consumedAt || grant.revokedAt || grant.expiresAt <= now) {
+    if (grant.sourceAppId !== app.id || !invitationDigestMatches(invitation, grant.tokenDigest) || grant.consumedAt || grant.revokedAt || grant.expiresAt <= now) {
       return { kind: 'invalid' }
     }
     const credentialId = nanoid()
@@ -155,10 +178,6 @@ export async function exchangeEnrollment({
     await afterAuditAppended?.()
     return { kind: 'created', appId: grant.sourceAppId, credentialId, keyId: thumbprint }
   })
-}
-
-export function invitationRateSubject(invitation: string): string {
-  return createHash('sha256').update(invitation, 'utf8').digest('hex')
 }
 
 export { getTrustedClientIp }

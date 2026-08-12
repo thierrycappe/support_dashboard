@@ -8,7 +8,7 @@ import { POST as exchangeRoute } from '@/app/api/v1/enrollments/exchange/route'
 import { POST as tokenRoute } from '@/app/api/v1/service-tokens/route'
 import { POST as escalationRoute } from '@/app/api/v1/escalations/route'
 import { createInvitation } from '@/lib/service-auth/invitations'
-import { exchangeEnrollment, invitationRateSubject } from '@/lib/service-auth/guards'
+import { exchangeEnrollment } from '@/lib/service-auth/guards'
 import { issueServiceAccessToken } from '@/lib/service-auth/access-tokens'
 import { consumeServiceRateLimit, serviceRateLimits } from '@/lib/service-auth/rate-limit'
 import { requireTestDatabaseUrl } from './helpers/database'
@@ -51,7 +51,7 @@ describe('versioned connector routes', () => {
     expect(results.map((response) => response.status).sort()).toEqual([201, 401])
     const createdResponse = results.find((response) => response.status === 201)!
     await expect(createdResponse.json()).resolves.toMatchObject({
-      appId, issuer: 'https://support.example.test', audience: 'support-tower',
+      appId, issuer: 'https://support.example.test', audience: 'https://support.example.test/api/v1/service-tokens',
       tokenEndpoint: 'https://support.example.test/api/v1/service-tokens',
       ingestEndpoint: 'https://support.example.test/api/v1/escalations',
     })
@@ -78,7 +78,7 @@ describe('versioned connector routes', () => {
     expect(await scalar(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId}`)).toBe(0)
     expect(await scalar(sql`select count(*)::int as count from app_enrollment_grants where id = ${invitation.id} and consumed_at is not null`)).toBe(0)
     expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'SERVICE_APP_ENROLLED' and subject_id = ${appId}`)).toBe(0)
-    expect(await scalar(sql`select count(*)::int as count from service_rate_limit_buckets where subject in (${invitationRateSubject(invitation.secret)}, '203.0.113.8')`)).toBe(0)
+    expect(await scalar(sql`select count(*)::int as count from service_rate_limit_buckets`)).toBe(0)
   })
 
   it.each([
@@ -148,27 +148,52 @@ describe('versioned connector routes', () => {
     expect(await scalar(sql`select count(*)::int as count from app_enrollment_grants where id = ${invitation.id} and consumed_at is not null`)).toBe(0)
     expect(await scalar(sql`select count(*)::int as count from source_apps where id = ${appId} and enrollment_status = 'PENDING' and credential_mode = 'LEGACY_BEARER'`)).toBe(1)
     expect(await scalar(sql`select count(*)::int as count from audit_events where action = 'SERVICE_APP_ENROLLED' and subject_id = ${appId}`)).toBe(0)
-    expect(await scalar(sql`select count(*)::int as count from service_rate_limit_buckets where subject in (${invitationRateSubject(invitation.secret)}, '203.0.113.8')`)).toBe(0)
+    expect(await scalar(sql`select count(*)::int as count from service_rate_limit_buckets`)).toBe(0)
     await expect(exchangeEnrollment({ db: getDb(), grantId: invitation.id, invitation: invitation.secret, publicJwk: appPublicJwk, clientIp: '203.0.113.8', correlationId: randomUUID() })).resolves.toMatchObject({ kind: 'created', appId })
   })
 
   it('issues one five-minute token and rejects replay of the client assertion', async () => {
-    const credentialId = await enroll()
-    const assertion = await clientAssertion(credentialId, `assertion-${randomUUID()}`)
-    const first = await tokenRoute(jsonRequest('/api/v1/service-tokens', { clientAssertion: assertion }))
+    const enrollment = await exchangeRoute(enrollmentRequest(invitation.secret))
+    expect(enrollment.status).toBe(201)
+    const connection = await enrollment.json() as { appId: string; credentialId: string; audience: string; tokenEndpoint: string }
+    const assertion = await clientAssertion(connection.credentialId, `assertion-${randomUUID()}`, connection.audience)
+    const first = await tokenRoute(jsonRequest(connection.tokenEndpoint, { clientAssertion: assertion }))
     expect(first.status).toBe(200)
     const body = await first.json() as { accessToken: string; expiresIn: number; scope: string }
     expect(body.accessToken.split('.')).toHaveLength(3)
     expect(body.expiresIn).toBe(300)
     expect(body.scope).toBe('escalations:write')
-    expect((await tokenRoute(jsonRequest('/api/v1/service-tokens', { clientAssertion: assertion }))).status).toBe(401)
+    expect((await tokenRoute(jsonRequest(connection.tokenEndpoint, { clientAssertion: assertion }))).status).toBe(401)
+  })
+
+  it('shares one persisted grant rate bucket across distinct wrong secrets', async () => {
+    for (let index = 0; index < serviceRateLimits.enrollmentInvitation.limit; index += 1) {
+      expect((await exchangeRoute(enrollmentRequest(`wrong-secret-${index}`))).status).toBe(401)
+    }
+    const limitedWrong = await exchangeRoute(enrollmentRequest('wrong-secret-over-limit'))
+    expect(limitedWrong.status).toBe(429)
+    expect(Number(limitedWrong.headers.get('retry-after'))).toBeGreaterThan(0)
+    expect((await exchangeRoute(enrollmentRequest(invitation.secret))).status).toBe(429)
+
+    const persisted = await getDb().execute<{ tokenDigest: string }>(sql`
+      select token_digest as "tokenDigest" from app_enrollment_grants where id = ${invitation.id}
+    `)
+    expect(await scalar(sql`
+      select count(*)::int as count from service_rate_limit_buckets
+       where scope = 'enrollment:invitation' and subject = ${persisted.rows[0]!.tokenDigest} and count = ${serviceRateLimits.enrollmentInvitation.limit}
+    `)).toBe(1)
+    expect(await scalar(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId}`)).toBe(0)
+    expect(await scalar(sql`select count(*)::int as count from app_enrollment_grants where id = ${invitation.id} and consumed_at is not null`)).toBe(0)
+
+    await getDb().execute(sql`delete from service_rate_limit_buckets where scope = 'enrollment:invitation'`)
+    expect((await exchangeRoute(enrollmentRequest(invitation.secret))).status).toBe(201)
   })
 
   it.each(['invitation', 'ip'] as const)('enforces the enrollment %s rate-limit dimension', async (dimension) => {
     const now = new Date()
     const limit = dimension === 'invitation' ? serviceRateLimits.enrollmentInvitation : serviceRateLimits.enrollmentIp
     const scope = dimension === 'invitation' ? 'enrollment:invitation' : 'enrollment:ip'
-    const subject = dimension === 'invitation' ? invitationRateSubject(invitation.secret) : '203.0.113.8'
+    const subject = dimension === 'invitation' ? await grantRateSubject() : '203.0.113.8'
     for (let index = 0; index < limit.limit; index += 1) {
       await consumeServiceRateLimit({ tx: getDb(), scope, subject, ...limit, now })
     }
@@ -242,11 +267,11 @@ async function enroll(): Promise<string> {
   return ((await response.json()) as { credentialId: string }).credentialId
 }
 
-async function clientAssertion(credentialId: string, jti: string): Promise<string> {
+async function clientAssertion(credentialId: string, jti: string, audience = 'https://support.example.test/api/v1/service-tokens'): Promise<string> {
   const seconds = Math.floor(Date.now() / 1000)
   return new SignJWT({ scope: ['escalations:write'] })
     .setProtectedHeader({ alg: 'EdDSA', kid: credentialId }).setIssuer(appId).setSubject(appId)
-    .setAudience('support-tower-service').setIssuedAt(seconds).setExpirationTime(seconds + 30).setJti(jti).sign(appPrivateKey)
+    .setAudience(audience).setIssuedAt(seconds).setExpirationTime(seconds + 30).setJti(jti).sign(appPrivateKey)
 }
 
 function enrollmentRequest(secret: string): Request {
@@ -257,7 +282,8 @@ function enrollmentRequest(secret: string): Request {
 }
 
 function jsonRequest(path: string, body: unknown, headers: Record<string, string> = {}): Request {
-  return new Request(`https://tower${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-correlation-id': randomUUID(), ...headers }, body: JSON.stringify(body) })
+  const url = path.startsWith('http') ? path : `https://tower${path}`
+  return new Request(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-correlation-id': randomUUID(), ...headers }, body: JSON.stringify(body) })
 }
 
 function escalationBody() {
@@ -277,4 +303,11 @@ async function setAppState(state: 'app-paused' | 'enrollment-paused' | 'enrollme
   else if (state === 'enrollment-paused') await getDb().execute(sql`update source_apps set enrollment_status = 'PAUSED' where id = ${appId}`)
   else if (state === 'enrollment-revoked') await getDb().execute(sql`update source_apps set enrollment_status = 'REVOKED' where id = ${appId}`)
   else await getDb().execute(sql`update source_apps set credential_mode = 'PUBLIC_KEY' where id = ${appId}`)
+}
+
+async function grantRateSubject(): Promise<string> {
+  const result = await getDb().execute<{ tokenDigest: string }>(sql`
+    select token_digest as "tokenDigest" from app_enrollment_grants where id = ${invitation.id}
+  `)
+  return result.rows[0]!.tokenDigest
 }

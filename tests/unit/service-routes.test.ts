@@ -8,6 +8,7 @@ import { handleEscalation } from '@/app/api/v1/escalations/route'
 import { AccessTokenVerificationError } from '@/lib/service-auth/access-tokens'
 
 const correlationId = 'correlation-123'
+process.env.SUPPORT_TOWER_PUBLIC_URL = 'https://support.example.com'
 
 describe('versioned service route contracts', () => {
   it('returns stable enrollment and token success envelopes', async () => {
@@ -19,7 +20,7 @@ describe('versioned service route contracts', () => {
     expect(enrollment.status).toBe(201)
     await expect(enrollment.json()).resolves.toEqual({
       appId: 'app-1', credentialId: 'credential-1', keyId: 'thumbprint-1', issuer: 'https://support.example.com',
-      audience: 'support-tower', tokenEndpoint: 'https://support.example.com/api/v1/service-tokens',
+      audience: 'https://support.example.com/api/v1/service-tokens', tokenEndpoint: 'https://support.example.com/api/v1/service-tokens',
       ingestEndpoint: 'https://support.example.com/api/v1/escalations',
     })
 
@@ -43,6 +44,26 @@ describe('versioned service route contracts', () => {
     })
     expect(await error(token)).toEqual([401, 'INVALID_CLIENT_ASSERTION'])
     expect(await token.clone().text()).not.toContain('top-secret-assertion')
+  })
+
+  it.each([
+    ['missing', ''],
+    ['path-bearing', 'https://support.example.com/wrong'],
+    ['credential-bearing', 'https://user:password@support.example.com'],
+  ])('returns sanitized 503 before mutation when trusted origin is %s', async (_name, publicOrigin) => {
+    const enrollmentExchange = vi.fn()
+    const enrollment = await handleEnrollmentExchange(request('/enrollments/exchange', enrollmentBody()), {
+      exchange: enrollmentExchange, trustedClientIp: () => '203.0.113.1', publicOrigin,
+    })
+    expect(await error(enrollment)).toEqual([503, 'SERVICE_UNAVAILABLE'])
+    expect(enrollmentExchange).not.toHaveBeenCalled()
+
+    const assertionExchange = vi.fn()
+    const token = await handleServiceToken(request('/service-tokens', { clientAssertion: 'assertion' }), {
+      exchangeAssertion: assertionExchange, publicOrigin,
+    })
+    expect(await error(token)).toEqual([503, 'SERVICE_UNAVAILABLE'])
+    expect(assertionExchange).not.toHaveBeenCalled()
   })
 
   it('returns a sanitized 503 when token persistence fails', async () => {
