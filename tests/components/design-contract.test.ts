@@ -57,6 +57,12 @@ describe('design accessibility contract', () => {
     expect(css).toMatch(/\.group-badges\s+\.ui-badge\s*\{[\s\S]*?justify-self:\s*start[\s\S]*?width:\s*max-content/)
     expect(css).toMatch(/\.channel-row\s*>\s*\.ui-badge\s*\{[\s\S]*?justify-self:\s*start[\s\S]*?width:\s*max-content/)
   })
+
+  it('contains team ledgers and form controls inside the 390px viewport', () => {
+    expect(css).toMatch(/\.operations-section\s+:is\(input, select, textarea\)\s*\{[\s\S]*?min-width:\s*0[\s\S]*?width:\s*100%[\s\S]*?max-width:\s*100%/)
+    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.group-ledger,\s*\.channel-ledger,\s*\.group-row,\s*\.channel-row,\s*\.inline-operation-form,\s*\.channel-form,\s*\.group-membership-form,\s*\.channel-secret-replacement\s*\{[\s\S]*?min-width:\s*0[\s\S]*?max-width:\s*100%/)
+    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.group-row\s*>\s*\*,\s*\.channel-row\s*>\s*\*\s*\{[\s\S]*?min-width:\s*0[\s\S]*?max-width:\s*100%/)
+  })
 })
 
 function parseThemeTokens(stylesheet: string, selector: string): ThemeTokens {

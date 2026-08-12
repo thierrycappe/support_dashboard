@@ -1447,9 +1447,21 @@ pre {
 }
 
 .operations-section {
+  min-width: 0;
   margin-top: var(--space-8);
   padding-top: var(--space-6);
   border-top: 1px solid var(--border);
+}
+
+.operations-section .field {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.operations-section :is(input, select, textarea) {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .group-ledger,
@@ -1799,6 +1811,25 @@ pre {
   .channel-form,
   .group-membership-form {
     grid-template-columns: 1fr;
+  }
+
+  .group-ledger,
+  .channel-ledger,
+  .group-row,
+  .channel-row,
+  .inline-operation-form,
+  .channel-form,
+  .group-membership-form,
+  .channel-secret-replacement {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .group-row > *,
+  .channel-row > * {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
   .channel-form .field:has(textarea),
