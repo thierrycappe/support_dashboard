@@ -119,7 +119,7 @@ function isRetryableTransactionError(error: unknown): boolean {
   let current: unknown = error
   for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
     const code = (current as { code?: unknown }).code
-    if (code === '40001' || code === '23505') return true
+    if (code === '40001' || code === '23505' || code === '40P01') return true
     current = (current as { cause?: unknown }).cause
   }
   return false

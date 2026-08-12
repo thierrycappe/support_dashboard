@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
 import { backfillSupportRouting } from '@/scripts/backfill-support-routing'
-import { acceptLegacyPayload, resolveLegacyTargets } from '@/lib/escalations/legacy'
+import { acceptLegacyPayload } from '@/lib/escalations/legacy'
 import { requireTestDatabaseUrl } from './helpers/database'
 
 process.env.DATABASE_URL = requireTestDatabaseUrl()
@@ -78,12 +78,21 @@ describe('backfillSupportRouting', () => {
       onRoutingLock: async () => { cutoverLocked(); await release },
     })
     await locked
+    let intakeLockAcquired!: () => void
+    const intakeAcquired = new Promise<void>((resolve) => { intakeLockAcquired = resolve })
     const intake = acceptLegacyPayload({
       db: getDb(), env: fullEnv, authoritativeAppSlug: 'backfill-a', idempotencyKey: `race-${randomUUID()}`,
       payload: { app: { slug: 'backfill-a', name: 'Backfill A', environment: 'test' }, ticket: { externalId: 'race-1', kind: 'BUG', status: 'NEW', priority: 'MEDIUM', title: 'Race', description: 'Race' } },
+      onRoutingLockAcquired: async () => { intakeLockAcquired(); await release },
     })
-    releaseCutover()
-    await Promise.all([backfill, intake])
+    try {
+      await waitForRoutingLockWaiter()
+      releaseCutover()
+      await Promise.all([backfill, intake, intakeAcquired])
+    } finally {
+      releaseCutover()
+      await Promise.allSettled([backfill, intake])
+    }
 
     const targets = await getDb().execute<{ eventId: string; targetKey: string; configSource: string }>(sql`
       select escalation_event_id as "eventId", target_key as "targetKey", config_source as "configSource"
@@ -166,17 +175,18 @@ describe('backfillSupportRouting', () => {
     const intake = acceptLegacyPayload({
       db: getDb(), env: fullEnv, authoritativeAppSlug: 'backfill-a', idempotencyKey: `inverse-race-${randomUUID()}`,
       payload: { app: { slug: 'backfill-a', name: 'Backfill A', environment: 'test' }, ticket: { externalId: 'inverse-race-1', kind: 'BUG', status: 'NEW', priority: 'MEDIUM', title: 'Inverse race', description: 'Inverse race' } },
-      resolveTargets: async (tx, appId, priority) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtext('support-tower-routing-cutover'))`)
-        intakeLocked()
-        await release
-        return resolveLegacyTargets(tx, appId, priority, fullEnv)
-      },
+      onRoutingLockAcquired: async () => { intakeLocked(); await release },
     })
     await locked
     const backfill = backfillSupportRouting({ db: getDb(), env: fullEnv, actorId })
-    releaseIntake()
-    await Promise.all([intake, backfill])
+    try {
+      await waitForRoutingLockWaiter()
+      releaseIntake()
+      await Promise.all([intake, backfill])
+    } finally {
+      releaseIntake()
+      await Promise.allSettled([intake, backfill])
+    }
 
     const targets = await getDb().execute<{ configSource: string }>(sql`
       select config_source as "configSource" from delivery_outbox where target_key = 'legacy:central-pushover'
@@ -196,4 +206,16 @@ async function scalar(query: ReturnType<typeof sql>): Promise<number> {
 async function auditRows(): Promise<unknown[]> {
   const rows = await getDb().execute(sql`select action, metadata from audit_events where actor_id = ${actorId} order by id`)
   return rows.rows
+}
+
+async function waitForRoutingLockWaiter(): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const waiting = await scalar(sql`
+      select count(*)::int as count from pg_locks
+       where locktype = 'advisory' and granted = false
+    `)
+    if (waiting > 0) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error('Expected a transaction waiting on the routing advisory lock')
 }

@@ -17,6 +17,7 @@ export async function acceptLegacyPayload({
   env = process.env,
   scheduleDeliveryWakeup,
   resolveTargets,
+  onRoutingLockAcquired,
 }: {
   payload: FeedbackIngestPayload
   authoritativeAppSlug: string
@@ -25,6 +26,7 @@ export async function acceptLegacyPayload({
   env?: Env
   scheduleDeliveryWakeup?: () => void
   resolveTargets?: IntakeDependencies['resolveTargets']
+  onRoutingLockAcquired?: () => Promise<void>
 }): Promise<IntakeResult> {
   const parsedPayload = feedbackIngestSchema.parse(payload)
   if (parsedPayload.app.slug !== authoritativeAppSlug) throw new Error('source app identity mismatch')
@@ -36,6 +38,10 @@ export async function acceptLegacyPayload({
   return acceptEscalation({ appId: normalized.authoritativeAppId, credentialId: null, idempotencyKey: key, command: normalized.command }, {
     db,
     scheduleDeliveryWakeup,
+    beforeAcceptance: async (tx) => {
+      await lockRoutingCutover(tx)
+      await onRoutingLockAcquired?.()
+    },
     resolveTargets: resolveTargets ?? ((tx, appId, priority) => resolveLegacyTargets(tx, appId, priority, env)),
   })
 }
@@ -45,9 +51,8 @@ export function legacyResult(result: IntakeResult): IngestResult {
 }
 
 export async function resolveLegacyTargets(tx: DbTransaction, appId: string, priority: Parameters<typeof resolveTargetsFromDb>[2], env: Env) {
-  // Target selection and the routing backfill share this transaction-scoped
-  // lock. A material event therefore observes exactly one cutover state.
-  await lockRoutingCutover(tx)
+  // Legacy acceptance acquires the cutover lock before any receipt or ticket
+  // writes. This resolver only observes the locked routing state.
   const retired = await tx.select({ key: supportSettings.key }).from(supportSettings)
     .where(eq(supportSettings.key, LEGACY_PUSHOVER_BRIDGE_RETIRED_MARKER)).limit(1)
   const policies = await tx.select({ id: appNotificationPolicies.id }).from(appNotificationPolicies)

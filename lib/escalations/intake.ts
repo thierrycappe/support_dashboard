@@ -41,6 +41,7 @@ export interface IntakeDependencies {
   db: Db
   portalOrigin?: string
   scheduleDeliveryWakeup?: () => void
+  beforeAcceptance?(tx: DbTransaction): Promise<void>
   resolveTargets(
     tx: DbTransaction,
     appId: string,
@@ -74,6 +75,7 @@ export async function acceptEscalation(
     db: deps?.db ?? getDb(),
     portalOrigin: deps?.portalOrigin,
     scheduleDeliveryWakeup: deps?.scheduleDeliveryWakeup ?? scheduleDeliveryWakeup,
+    beforeAcceptance: deps?.beforeAcceptance,
     resolveTargets: deps?.resolveTargets ?? resolveTargetsFromDb,
   }
   const portalOrigin = trustedPortalOrigin(dependencies.portalOrigin)
@@ -81,6 +83,7 @@ export async function acceptEscalation(
   const acceptedAt = input.receivedAt ?? new Date()
 
   const result = await dependencies.db.transaction(async (tx) => {
+    await dependencies.beforeAcceptance?.(tx)
     const receipt = await claimReceipt(tx, input, digest, acceptedAt)
     if (receipt.kind === 'duplicate') return receipt.result
     if (receipt.kind === 'conflict') throw new IntakeError('IDEMPOTENCY_CONFLICT')
