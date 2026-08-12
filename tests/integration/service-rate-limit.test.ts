@@ -1,10 +1,12 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql } from 'drizzle-orm'
-import { closeDbPool, getDb } from '@/lib/db'
+import { closeDbPool, getDb, getDbPool } from '@/lib/db'
 import {
+  cleanupExpiredServiceRateLimitBuckets,
   consumeRequiredLimits,
   consumeServiceRateLimit,
   getTrustedClientIp,
+  RATE_LIMIT_BUCKET_RETENTION_MS,
   serviceRateLimits,
   tokenCredentialRequiredLimits,
 } from '@/lib/service-auth/rate-limit'
@@ -76,6 +78,52 @@ describe('database-backed service rate limits', () => {
     expect(getTrustedClientIp(new Request('https://tower', { headers: { 'x-vercel-forwarded-for': '203.0.113.8, 198.51.100.2' } }))).toBeNull()
     expect(getTrustedClientIp(new Request('https://tower', { headers: { 'x-vercel-forwarded-for': 'not-an-ip' } }))).toBeNull()
     expect(getTrustedClientIp(new Request('https://tower'), { remoteAddress: '203.0.113.9' })).toBe('203.0.113.9')
+  })
+
+  it('retains a bucket at the retention boundary and removes only older buckets', async () => {
+    const boundary = new Date('2026-08-12T10:00:00.000Z')
+    const cleanupNow = new Date(boundary.getTime() + RATE_LIMIT_BUCKET_RETENTION_MS)
+    await consumeServiceRateLimit({ tx: getDb(), scope: 'cleanup', subject: 'boundary', limit: 1, windowMs: 60_000, now: boundary })
+    await consumeServiceRateLimit({ tx: getDb(), scope: 'cleanup', subject: 'expired', limit: 1, windowMs: 60_000, now: new Date(boundary.getTime() - 60_000) })
+
+    await expect(cleanupExpiredServiceRateLimitBuckets({ db: getDb(), now: cleanupNow, limit: 100 })).resolves.toBe(1)
+    const rows = await getDb().execute<{ subject: string } & Record<string, unknown>>(sql`
+      select subject from service_rate_limit_buckets where scope = 'cleanup' order by subject
+    `)
+    expect(rows.rows).toEqual([{ subject: 'boundary' }])
+  })
+
+  it('bounds rate-limit cleanup batches and lets concurrent workers delete each bucket once', async () => {
+    const expiredAt = new Date(now.getTime() - RATE_LIMIT_BUCKET_RETENTION_MS - 60_000)
+    await Promise.all(Array.from({ length: 4 }, (_, index) => consumeServiceRateLimit({
+      tx: getDb(), scope: 'cleanup-concurrent', subject: `subject-${index}`, limit: 1, windowMs: 60_000, now: expiredAt,
+    })))
+
+    const deleted = await Promise.all([
+      cleanupExpiredServiceRateLimitBuckets({ db: getDb(), now, limit: 2 }),
+      cleanupExpiredServiceRateLimitBuckets({ db: getDb(), now, limit: 2 }),
+      cleanupExpiredServiceRateLimitBuckets({ db: getDb(), now, limit: 2 }),
+    ])
+    expect(deleted.reduce((total, value) => total + value, 0)).toBe(4)
+    await expect(cleanupExpiredServiceRateLimitBuckets({ db: getDb(), now, limit: 2 })).resolves.toBe(0)
+  })
+
+  it('settles a blocked cleanup through a transaction-local timeout and reuses the pool', async () => {
+    const expiredAt = new Date(now.getTime() - RATE_LIMIT_BUCKET_RETENTION_MS - 60_000)
+    await consumeServiceRateLimit({ tx: getDb(), scope: 'cleanup-lock', subject: 'subject', limit: 1, windowMs: 60_000, now: expiredAt })
+    const blocker = await getDbPool().connect()
+    try {
+      await blocker.query('begin')
+      await blocker.query('lock table service_rate_limit_buckets in access exclusive mode')
+
+      await expect(cleanupExpiredServiceRateLimitBuckets({ db: getDb(), now, limit: 100, statementTimeoutMs: 50 }))
+        .rejects.toMatchObject({ cause: { code: '57014' } })
+    } finally {
+      await blocker.query('rollback')
+      blocker.release()
+    }
+
+    await expect(cleanupExpiredServiceRateLimitBuckets({ db: getDb(), now, limit: 100, statementTimeoutMs: 100 })).resolves.toBe(1)
   })
 })
 

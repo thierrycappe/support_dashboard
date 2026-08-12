@@ -167,7 +167,10 @@ export const auditEvents = pgTable('audit_events', {
 
 export const serviceRateLimitBuckets = pgTable('service_rate_limit_buckets', {
   id: text('id').primaryKey(), scope: text('scope').notNull(), subject: text('subject').notNull(), windowStart: utcTimestamp('window_start').notNull(), count: integer('count').notNull().default(0), createdAt: utcTimestamp('created_at').notNull(), updatedAt: utcTimestamp('updated_at').notNull(),
-}, (table) => [uniqueIndex('service_rate_limit_buckets_scope_subject_window_idx').on(table.scope, table.subject, table.windowStart)])
+}, (table) => [
+  uniqueIndex('service_rate_limit_buckets_scope_subject_window_idx').on(table.scope, table.subject, table.windowStart),
+  index('service_rate_limit_buckets_window_start_idx').on(table.windowStart, table.id),
+])
 
 export const supportSettings = pgTable('support_settings', {
   key: text('key').primaryKey(), value: jsonb('value').$type<Record<string, unknown> | string | number | boolean | null>().notNull(), updatedAt: utcTimestamp('updated_at').notNull(),

@@ -9,6 +9,14 @@ export const serviceRateLimits = {
   ingestApp: { limit: 120, windowMs: 60_000 },
 } as const
 
+/**
+ * The longest service-rate-limit window is one hour. Retaining buckets for a
+ * further hour keeps every active window available while maintenance scans old
+ * rows outside the authentication transaction.
+ */
+export const RATE_LIMIT_BUCKET_RETENTION_MS = 2 * 60 * 60_000
+const DEFAULT_RATE_LIMIT_CLEANUP_LIMIT = 100
+
 export interface RateLimitDecision {
   allowed: boolean
   remaining: number
@@ -79,6 +87,58 @@ export async function consumeRequiredLimits(tx: DbTransaction, limits: RequiredR
     const decision = await consumeServiceRateLimit({ tx, ...limit })
     if (!decision.allowed) throw new ServiceRateLimitError(decision, limit.scope)
   }
+}
+
+/**
+ * Deletes one bounded batch of buckets whose complete retention period has
+ * elapsed. The strict comparison preserves a bucket exactly at the boundary.
+ * This maintenance-only operation is deliberately separate from request
+ * authentication, so cleanup failure cannot deny a valid request.
+ */
+export async function cleanupExpiredServiceRateLimitBuckets({
+  db = getDb(),
+  now = new Date(),
+  limit = DEFAULT_RATE_LIMIT_CLEANUP_LIMIT,
+  statementTimeoutMs,
+}: {
+  db?: Db
+  now?: Date
+  limit?: number
+  statementTimeoutMs?: number
+} = {}): Promise<number> {
+  const boundedLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 500) : DEFAULT_RATE_LIMIT_CLEANUP_LIMIT
+  const threshold = new Date(now.getTime() - RATE_LIMIT_BUCKET_RETENTION_MS)
+  if (statementTimeoutMs === undefined) return deleteExpiredServiceRateLimitBuckets(db, threshold, boundedLimit)
+
+  const boundedTimeoutMs = Math.min(Math.max(Math.floor(statementTimeoutMs), 1), 60_000)
+  const deadline = Date.now() + boundedTimeoutMs
+  return db.transaction(async (tx) => {
+    const remainingMs = Math.max(deadline - Date.now(), 1)
+    await tx.execute(sql`select set_config('statement_timeout', ${`${remainingMs}ms`}, true)`)
+    return deleteExpiredServiceRateLimitBuckets(tx, threshold, boundedLimit)
+  })
+}
+
+async function deleteExpiredServiceRateLimitBuckets(
+  db: Db | DbTransaction,
+  threshold: Date,
+  limit: number,
+): Promise<number> {
+  const deleted = await db.execute<{ id: string } & Record<string, unknown>>(sql`
+    with candidates as (
+      select id
+        from service_rate_limit_buckets
+       where window_start < ${threshold}
+       order by window_start, id
+       limit ${limit}
+       for update skip locked
+    )
+    delete from service_rate_limit_buckets bucket
+     using candidates
+     where bucket.id = candidates.id
+     returning bucket.id
+  `)
+  return deleted.rows.length
 }
 
 export function getTrustedClientIp(

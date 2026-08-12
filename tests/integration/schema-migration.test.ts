@@ -51,6 +51,7 @@ beforeAll(async () => {
     '0002_notification_channel_reporter_context',
     '0003_audit_events_append_only',
     '0004_audit_events_reject_truncate',
+    '0005_service_rate_limit_bucket_retention',
   ].map(async (name) => ({
     name,
     sqlText: await readFile(new URL(`../../drizzle/${name}.sql`, import.meta.url), 'utf8'),
@@ -98,8 +99,8 @@ it('rejects changed SQL under an applied migration name', async () => {
 })
 
 it('upgrades the exact current schema without changing legacy rows or named objects', async () => {
-  expect(await applySupportMigrations()).toEqual(['applied', 'applied', 'applied', 'applied'])
-  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied', 'already-applied', 'already-applied'])
+  expect(await applySupportMigrations()).toEqual(['applied', 'applied', 'applied', 'applied', 'applied'])
+  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied', 'already-applied', 'already-applied', 'already-applied'])
 
   const legacyRows = await rehearsalPool.query<{ table_name: string; count: number }>(`
     select 'source_apps' as table_name, count(*)::int as count from source_apps union all
@@ -163,7 +164,8 @@ it('upgrades the exact current schema without changing legacy rows or named obje
     'password_reset_tokens_user_created_idx', 'password_reset_tokens_expires_idx',
     'app_credentials_thumbprint_idx', 'app_credentials_app_status_idx', 'delivery_outbox_claim_idx',
     'delivery_outbox_event_target_generation_idx', 'escalation_events_ticket_generation_idx',
-    'service_assertion_replays_expires_idx', 'support_groups_one_central_fallback_idx',
+    'service_assertion_replays_expires_idx', 'service_rate_limit_buckets_window_start_idx',
+    'support_groups_one_central_fallback_idx',
   ])
 })
 
@@ -171,11 +173,13 @@ it('upgrades an original 0003 migration ledger with the additive truncate protec
   const originalChecksum = createHash('sha256').update(originalAuditAppendOnlyMigrationSql).digest('hex')
   const originalMigration = supportMigrations.find(({ name }) => name === '0003_audit_events_append_only')
   const truncateMigration = supportMigrations.find(({ name }) => name === '0004_audit_events_reject_truncate')
+  const rateLimitRetentionMigration = supportMigrations.find(({ name }) => name === '0005_service_rate_limit_bucket_retention')
 
   expect(originalMigration?.sqlText).toBe(originalAuditAppendOnlyMigrationSql)
   expect(truncateMigration).toBeDefined()
+  expect(rateLimitRetentionMigration).toBeDefined()
 
-  for (const migration of supportMigrations.filter(({ name }) => name !== '0004_audit_events_reject_truncate')) {
+  for (const migration of supportMigrations.filter(({ name }) => !['0004_audit_events_reject_truncate', '0005_service_rate_limit_bucket_retention'].includes(name))) {
     const sqlText = migration.name === '0003_audit_events_append_only'
       ? originalAuditAppendOnlyMigrationSql
       : migration.sqlText
@@ -188,6 +192,8 @@ it('upgrades an original 0003 migration ledger with the additive truncate protec
   expect(await applyMigration({ ...originalMigration!, pool: ledgerUpgradePool })).toBe('already-applied')
   expect(await applyMigration({ ...truncateMigration!, pool: ledgerUpgradePool })).toBe('applied')
   expect(await applyMigration({ ...truncateMigration!, pool: ledgerUpgradePool })).toBe('already-applied')
+  expect(await applyMigration({ ...rateLimitRetentionMigration!, pool: ledgerUpgradePool })).toBe('applied')
+  expect(await applyMigration({ ...rateLimitRetentionMigration!, pool: ledgerUpgradePool })).toBe('already-applied')
   await expect(ledgerUpgradePool.query('truncate audit_events')).rejects.toThrow('audit_events is append-only')
 })
 

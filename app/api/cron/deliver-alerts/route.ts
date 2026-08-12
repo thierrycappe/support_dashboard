@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { drainImmediateDeliveries } from '@/lib/delivery/worker'
-import { drainExpiredAssertionReplays } from '@/lib/service-auth/maintenance'
+import { drainExpiredAssertionReplays, drainExpiredRateLimitBuckets } from '@/lib/service-auth/maintenance'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,9 +12,10 @@ function isCronAuthorized(request: Request): boolean {
 
 export async function GET(request: Request) {
   if (!isCronAuthorized(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  const [delivery, assertionReplayCleanup] = await Promise.all([
+  const [delivery, assertionReplayCleanup, rateLimitBucketCleanup] = await Promise.all([
     drainImmediateDeliveries(),
     drainExpiredAssertionReplays(),
+    drainExpiredRateLimitBuckets(),
   ])
-  return NextResponse.json({ ...delivery, assertionReplayCleanup })
+  return NextResponse.json({ ...delivery, assertionReplayCleanup, rateLimitBucketCleanup })
 }
