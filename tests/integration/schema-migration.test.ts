@@ -30,6 +30,7 @@ beforeAll(async () => {
   supportMigrations = await Promise.all([
     '0001_support_portal_core',
     '0002_notification_channel_reporter_context',
+    '0003_audit_events_append_only',
   ].map(async (name) => ({
     name,
     sqlText: await readFile(new URL(`../../drizzle/${name}.sql`, import.meta.url), 'utf8'),
@@ -69,8 +70,8 @@ it('rejects changed SQL under an applied migration name', async () => {
 })
 
 it('upgrades the exact current schema without changing legacy rows or named objects', async () => {
-  expect(await applySupportMigrations()).toEqual(['applied', 'applied'])
-  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied'])
+  expect(await applySupportMigrations()).toEqual(['applied', 'applied', 'applied'])
+  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied', 'already-applied'])
 
   const legacyRows = await rehearsalPool.query<{ table_name: string; count: number }>(`
     select 'source_apps' as table_name, count(*)::int as count from source_apps union all
@@ -315,6 +316,15 @@ it('rejects a database-backed outbox target without its database channel', async
     rendered_payload, status, next_attempt_at, created_at, updated_at
   ) values ('invalid-database-target', 'legacy-event', 'legacy-event', 'channel:missing', 1,
     'EMAIL', 'DATABASE', '{}'::jsonb, 'PENDING', now(), now(), now())`)).rejects.toThrow('delivery_outbox_target_source_check')
+})
+
+it('rejects audit event updates and deletes at the database boundary', async () => {
+  await applySupportMigrations()
+  await rehearsalPool.query(`insert into audit_events (id, actor_type, action, subject_type, metadata, created_at)
+    values ('append-only-audit', 'USER', 'TEST', 'audit_event', '{}'::jsonb, now())`)
+  await expect(rehearsalPool.query(`update audit_events set action = 'MUTATED' where id = 'append-only-audit'`)).rejects.toThrow('audit_events is append-only')
+  await expect(rehearsalPool.query(`delete from audit_events where id = 'append-only-audit'`)).rejects.toThrow('audit_events is append-only')
+  expect((await rehearsalPool.query<{ count: string }>(`select count(*)::text as count from audit_events where id = 'append-only-audit'`)).rows).toEqual([{ count: '1' }])
 })
 
 async function applySupportMigrations(): Promise<Array<'applied' | 'already-applied'>> {

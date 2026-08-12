@@ -126,7 +126,56 @@ describe('routing repositories', () => {
     const audit = await appendAuditEvent({ action: 'ROUTING_READ', subjectType: 'support_group', subjectId: 'subject-1', ...mutation })
     expect(audit).toMatchObject({ action: 'ROUTING_READ', actorId: 'admin-1', requestCorrelationId: 'routing-test' })
     expect(await scalar(sql`select count(*)::int as count from audit_events where id = ${audit.id}`)).toBe(1)
+    await expect(appendAuditEvent({
+      action: 'BAD_REASON', subjectType: 'channel', subjectId: 'x', metadata: { reason: 'override' }, ...mutation,
+    })).rejects.toThrow('Reserved audit metadata is not allowed')
     await expect(appendAuditEvent({ action: 'BAD', subjectType: 'channel', subjectId: 'x', metadata: { ciphertext: 'never-store-this' }, ...mutation })).rejects.toThrow('Sensitive audit metadata is not allowed')
+  })
+
+  it('does not lock a channel during slow validation and rejects a changed revision', async () => {
+    const group = await createGroup({ name: 'Concurrent channel', ...mutation })
+    const channel = await createChannel({ groupId: group.id, name: 'Concurrent', type: 'PUSHOVER', config: { appToken: 'token-one', userKey: 'user-one' }, keyring, ...mutation })
+    let releaseValidation!: () => void
+    let validationStarted!: () => void
+    const validationGate = new Promise<void>((resolve) => { releaseValidation = resolve })
+    const validationStartedGate = new Promise<void>((resolve) => { validationStarted = resolve })
+    const slowUpdate = updateChannel({
+      id: channel.id, config: { appToken: 'token-two', userKey: 'user-two' }, keyring, ...mutation,
+      validateConfig: async (_type, config) => {
+        validationStarted()
+        await validationGate
+        return { type: 'PUSHOVER', ...(config as { appToken: string; userKey: string }) }
+      },
+    })
+    await validationStartedGate
+    await expect(updateChannel({ id: channel.id, status: 'DISABLED', ...mutation })).resolves.toMatchObject({ status: 'DISABLED' })
+    releaseValidation()
+    await expect(slowUpdate).rejects.toThrow('Channel changed during configuration validation')
+    expect((await getRoutingContext({ sourceAppId: 'app-1' })).technicalChannels).toEqual([])
+    const row = await getDb().execute<{ status: string; encryptedConfig: string }>(sql`select status, encrypted_config as "encryptedConfig" from notification_channels where id = ${channel.id}`)
+    expect(row.rows[0]).toMatchObject({ status: 'DISABLED' })
+    expect(row.rows[0]?.encryptedConfig).not.toContain('token-two')
+  })
+
+  it('rejects a channel type change that races configuration validation', async () => {
+    const group = await createGroup({ name: 'Type channel', ...mutation })
+    const channel = await createChannel({ groupId: group.id, name: 'Type race', type: 'PUSHOVER', config: { appToken: 'token-one', userKey: 'user-one' }, keyring, ...mutation })
+    let releaseValidation!: () => void
+    let validationStarted!: () => void
+    const validationGate = new Promise<void>((resolve) => { releaseValidation = resolve })
+    const validationStartedGate = new Promise<void>((resolve) => { validationStarted = resolve })
+    const slowUpdate = updateChannel({
+      id: channel.id, config: { appToken: 'token-two', userKey: 'user-two' }, keyring, ...mutation,
+      validateConfig: async (_type, config) => {
+        validationStarted()
+        await validationGate
+        return { type: 'PUSHOVER', ...(config as { appToken: string; userKey: string }) }
+      },
+    })
+    await validationStartedGate
+    await getDb().execute(sql`update notification_channels set type = 'EMAIL', updated_at = now() where id = ${channel.id}`)
+    releaseValidation()
+    await expect(slowUpdate).rejects.toThrow('Channel changed during configuration validation')
   })
 })
 

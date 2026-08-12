@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { appendAuditEvent, type AuditMutationContext } from '@/lib/audit/events'
 import { getDb, type Db } from '@/lib/db'
@@ -21,9 +21,25 @@ export interface PublicChannel {
 
 type ChannelStatus = PublicChannel['status']
 
+type ValidateConfig = (type: DeliveryChannelType, value: unknown) => Promise<ChannelConfig>
+
+const publicChannelSelection = {
+  id: notificationChannels.id,
+  groupId: notificationChannels.groupId,
+  name: notificationChannels.name,
+  type: notificationChannels.type,
+  status: notificationChannels.status,
+  recipientDisplay: notificationChannels.recipientDisplay,
+  redactedDestination: notificationChannels.redactedDestination,
+  includeReporterContext: notificationChannels.includeReporterContext,
+  lastSucceededAt: notificationChannels.lastSucceededAt,
+  lastFailedAt: notificationChannels.lastFailedAt,
+}
+const channelRevision = sql<string>`xmin`
+
 export async function createChannel({
   db = getDb(), keyring = loadChannelKeyring(), groupId, name, type, config,
-  status = 'ACTIVE', includeReporterContext = false, ...audit
+  status = 'ACTIVE', includeReporterContext = false, validateConfig = validateChannelConfigForPersistence, ...audit
 }: AuditMutationContext & {
   db?: Db
   keyring?: ChannelKeyring | null
@@ -33,10 +49,11 @@ export async function createChannel({
   config: unknown
   status?: ChannelStatus
   includeReporterContext?: boolean
+  validateConfig?: ValidateConfig
 }): Promise<PublicChannel> {
   const id = nanoid()
   const now = new Date()
-  const safeConfig = await validateChannelConfigForPersistence(type, config)
+  const safeConfig = await validateConfig(type, config)
   const encrypted = encrypt(safeConfig, id, keyring)
   const destinationLabel = redactedDestination(safeConfig)
   const record = {
@@ -58,7 +75,7 @@ export async function createChannel({
 
 export async function updateChannel({
   db = getDb(), keyring = loadChannelKeyring(), id, name, status, config,
-  includeReporterContext, ...audit
+  includeReporterContext, validateConfig = validateChannelConfigForPersistence, ...audit
 }: AuditMutationContext & {
   db?: Db
   keyring?: ChannelKeyring | null
@@ -67,23 +84,40 @@ export async function updateChannel({
   status?: ChannelStatus
   config?: unknown
   includeReporterContext?: boolean
+  validateConfig?: ValidateConfig
 }): Promise<PublicChannel> {
+  const snapshotRows = await db.select({
+    id: notificationChannels.id,
+    type: notificationChannels.type,
+    keyVersion: notificationChannels.keyVersion,
+    revision: channelRevision,
+  }).from(notificationChannels).where(eq(notificationChannels.id, id)).limit(1)
+  const snapshot = snapshotRows[0]
+  if (!snapshot) throw new Error('Notification channel not found')
+  const safeConfig = config === undefined ? null : await validateConfig(snapshot.type, config)
+  const encrypted = safeConfig ? encrypt(safeConfig, id, keyring) : null
+  const destinationLabel = safeConfig ? redactedDestination(safeConfig) : null
   const now = new Date()
   return db.transaction(async (tx) => {
-    const existing = await tx.select().from(notificationChannels)
-      .where(eq(notificationChannels.id, id)).for('update').limit(1)
+    const existing = await tx.select({
+      ...publicChannelSelection,
+      keyVersion: notificationChannels.keyVersion,
+      revision: channelRevision,
+    }).from(notificationChannels).where(eq(notificationChannels.id, id)).for('update').limit(1)
     const current = existing[0]
     if (!current) throw new Error('Notification channel not found')
+    if (safeConfig && (
+      current.type !== snapshot.type
+      || current.keyVersion !== snapshot.keyVersion
+      || current.revision !== snapshot.revision
+    )) throw new Error('Channel changed during configuration validation')
 
     const changes: Record<string, unknown> = { updatedAt: now }
     const changed: string[] = []
     if (name !== undefined) { changes.name = required(name, 'name'); changed.push('name') }
     if (status !== undefined) { changes.status = status; changed.push('status') }
     if (includeReporterContext !== undefined) { changes.includeReporterContext = includeReporterContext; changed.push('reporterContext') }
-    if (config !== undefined) {
-      const safeConfig = await validateChannelConfigForPersistence(current.type, config)
-      const encrypted = encrypt(safeConfig, id, keyring)
-      const destinationLabel = redactedDestination(safeConfig)
+    if (encrypted && destinationLabel) {
       Object.assign(changes, {
         encryptedConfig: encrypted.ciphertext, configNonce: encrypted.nonce,
         configAuthTag: encrypted.authTag, keyVersion: keyVersionNumber(encrypted.keyVersion),
@@ -91,7 +125,7 @@ export async function updateChannel({
       })
       changed.push('configuration')
     }
-    const rows = await tx.update(notificationChannels).set(changes).where(eq(notificationChannels.id, id)).returning()
+    const rows = await tx.update(notificationChannels).set(changes).where(eq(notificationChannels.id, id)).returning(publicChannelSelection)
     const row = rows[0]
     if (!row) throw new Error('Notification channel not found')
     await appendAuditEvent({

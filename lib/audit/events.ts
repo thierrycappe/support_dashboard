@@ -57,7 +57,7 @@ export async function appendAuditEvent({
     action: event.action,
     subjectType: event.subjectType,
     subjectId: event.subjectId,
-    metadata: { reason: safeReason, ...metadata },
+    metadata: { ...metadata, reason: safeReason },
     requestCorrelationId: event.requestCorrelationId,
     createdAt: event.createdAt,
   })
@@ -77,6 +77,9 @@ function assertSafeMetadata(value: unknown): void {
   }
   if (!value || typeof value !== 'object') return
   for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'reason') {
+      throw new Error('Reserved audit metadata is not allowed')
+    }
     if (/(secret|token|password|cipher|plain|nonce|auth.?tag|config|key)/i.test(key)) {
       throw new Error('Sensitive audit metadata is not allowed')
     }
