@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   assertLoadSummary,
   buildLoadPlan,
+  createAccessTokenProvider,
   percentile,
   persistenceSnapshot,
   resolveLoadTestConfig,
   resolveRunId,
   runSubmissions,
+  withValidatedFixture,
   summarizeLoad,
   type LoadObservation,
 } from '@/scripts/load-escalations'
@@ -34,25 +36,44 @@ describe('support escalation burst harness', () => {
 
   it('makes absent delivery attempts fail visibly after bounded polling', () => {
     const snapshot = persistenceSnapshot([
-      { idempotency_key: 'one', target_count: '1', first_attempt_ms: '25' },
-      { idempotency_key: 'two', target_count: '1', first_attempt_ms: null },
-    ], 2, true)
+      { idempotency_key: 'one', event_count: '1', target_key: 'channel:load', first_attempt_ms: '25' },
+      { idempotency_key: 'two', event_count: '1', target_key: 'channel:load', first_attempt_ms: null },
+    ], new Set(['one', 'two']), new Set(['channel:load']), true)
     expect(snapshot.receiptKeys).toEqual(new Set(['one', 'two']))
-    expect(snapshot.targetKeys).toEqual(new Set(['one', 'two']))
+    expect(snapshot.validDeliveryKeys).toEqual(new Set(['one']))
+    expect(snapshot.firstAttemptMs).toEqual([60_001])
+  })
+
+  it('rejects extra events and any missing or unexpected fixture target', () => {
+    const snapshot = persistenceSnapshot([
+      { idempotency_key: 'one', event_count: '2', target_key: 'channel:load', first_attempt_ms: '25' },
+      { idempotency_key: 'one', event_count: '2', target_key: 'channel:unexpected', first_attempt_ms: '30' },
+      { idempotency_key: 'two', event_count: '1', target_key: 'channel:load', first_attempt_ms: '35' },
+    ], new Set(['one', 'two']), new Set(['channel:load']), true)
+    expect(snapshot.validDeliveryKeys).toEqual(new Set(['two']))
     expect(snapshot.firstAttemptMs).toEqual([60_001])
   })
 
   it('accounts for unique receipts, duplicate responses, and missing delivery targets exactly', () => {
     const observations: LoadObservation[] = [
-      { idempotencyKey: 'one', result: 'created', status: 201, intakeMs: 110 },
-      { idempotencyKey: 'two', result: 'created', status: 201, intakeMs: 90 },
-      { idempotencyKey: 'one', result: 'duplicate', status: 200, intakeMs: 70 },
-      { idempotencyKey: 'bad', result: 'failed', status: 503, intakeMs: 60 },
+      { idempotencyKey: 'one', replay: false, result: 'created', status: 201, intakeMs: 110 },
+      { idempotencyKey: 'two', replay: false, result: 'created', status: 201, intakeMs: 90 },
+      { idempotencyKey: 'one', replay: true, result: 'duplicate', status: 200, intakeMs: 70 },
+      { idempotencyKey: 'bad', replay: false, result: 'failed', status: 503, intakeMs: 60 },
     ]
     expect(summarizeLoad({ observations, receiptKeys: new Set(['one']), targetKeys: new Set(['one']), firstAttemptMs: [800] })).toEqual({
       submitted: 4, acceptedUnique: 2, duplicateReplays: 1, failed: 1, missingReceipts: 1,
       missingDeliveryTargets: 1, intakeP95Ms: 110, firstAttemptP95Ms: 800,
     })
+  })
+
+  it('counts a created replay or duplicate first submission as a semantic failure', () => {
+    const observations: LoadObservation[] = [
+      { idempotencyKey: 'one', replay: false, result: 'duplicate', status: 200, intakeMs: 20 },
+      { idempotencyKey: 'one', replay: true, result: 'created', status: 201, intakeMs: 20 },
+    ]
+    expect(summarizeLoad({ observations, receiptKeys: new Set(['one']), targetKeys: new Set(['one']), firstAttemptMs: [1] }))
+      .toMatchObject({ acceptedUnique: 0, duplicateReplays: 0, failed: 2 })
   })
 
   it.each([
@@ -120,7 +141,21 @@ describe('support escalation burst harness', () => {
       fetchImpl: async () => new Response('{}', { status: 429, headers: { 'retry-after': '0' } }),
     })
     expect(result).toMatchObject({ throttledRetries: 1 })
-    expect(result.observations).toEqual([{ idempotencyKey: 'load-throttle-exhausted-0000', result: 'failed', status: 429, intakeMs: expect.any(Number) }])
+    expect(result.observations).toEqual([{ idempotencyKey: 'load-throttle-exhausted-0000', replay: false, result: 'failed', status: 429, intakeMs: expect.any(Number) }])
+  })
+
+  it('backs off for one second when a throttled response omits Retry-After', async () => {
+    const waits: number[] = []
+    let attempts = 0
+    const result = await runSubmissions(buildLoadPlan('throttle-default').slice(0, 1), {
+      baseUrl: 'http://127.0.0.1:3011', accessToken: 'token', concurrency: 1,
+      deadlineMs: 10_000, maxRetries: 1, wait: async (milliseconds) => { waits.push(milliseconds) },
+      fetchImpl: async () => ++attempts === 1
+        ? new Response('{}', { status: 429 })
+        : Response.json({ ticketId: 'ticket', result: 'created', acceptedAt: '2026-08-13T00:00:00.000Z' }, { status: 201 }),
+    })
+    expect(waits).toEqual([1_000])
+    expect(result.observations[0]).toMatchObject({ result: 'created' })
   })
 
   it('aborts a hung request at the bounded global deadline', async () => {
@@ -133,6 +168,59 @@ describe('support escalation burst harness', () => {
       }),
     })
     expect(Date.now() - startedAt).toBeLessThan(500)
-    expect(result.observations).toEqual([{ idempotencyKey: 'load-hung-0000', result: 'failed', status: 0, intakeMs: expect.any(Number) }])
+    expect(result.observations).toEqual([{ idempotencyKey: 'load-hung-0000', replay: false, result: 'failed', status: 0, intakeMs: expect.any(Number) }])
+  })
+
+  it('keeps the deadline active while consuming the response body', async () => {
+    const startedAt = Date.now()
+    const result = await runSubmissions(buildLoadPlan('hung-body').slice(0, 1), {
+      baseUrl: 'http://127.0.0.1:3011', accessToken: 'token', concurrency: 1,
+      deadlineMs: 25, maxRetries: 0,
+      fetchImpl: async (_url, init) => new Response(new ReadableStream({
+        start(controller) {
+          const fallback = setTimeout(() => controller.error(new Error('test fallback')), 150)
+          init?.signal?.addEventListener('abort', () => {
+            clearTimeout(fallback)
+            controller.error(new DOMException('Aborted', 'AbortError'))
+          }, { once: true })
+        },
+      }), { status: 201, headers: { 'content-type': 'application/json' } }),
+    })
+    expect(Date.now() - startedAt).toBeLessThan(100)
+    expect(result.observations).toEqual([{ idempotencyKey: 'load-hung-body-0000', replay: false, result: 'failed', status: 0, intakeMs: expect.any(Number) }])
+  })
+
+  it('does not clean any data when dedicated fixture validation fails', async () => {
+    let cleanups = 0
+    await expect(withValidatedFixture(
+      async () => { throw new Error('not dedicated') },
+      async () => undefined,
+      async () => { cleanups += 1 },
+    )).rejects.toThrow('not dedicated')
+    expect(cleanups).toBe(0)
+  })
+
+  it('cleans a validated fixture after both successful and failed work', async () => {
+    let cleanups = 0
+    await expect(withValidatedFixture(
+      async () => ({ expectedTargetKeys: new Set(['channel:load']) }),
+      async () => { throw new Error('submission failed') },
+      async () => { cleanups += 1 },
+    )).rejects.toThrow('submission failed')
+    expect(cleanups).toBe(1)
+  })
+
+  it('refreshes the short-lived service token during a long bounded run', async () => {
+    let now = 1_000_000
+    let issued = 0
+    const provider = createAccessTokenProvider({
+      now: () => now,
+      requestToken: async () => ({ accessToken: `token-${++issued}`, expiresInSeconds: 300 }),
+    })
+    expect(await provider()).toBe('token-1')
+    now += 269_000
+    expect(await provider()).toBe('token-1')
+    now += 2_000
+    expect(await provider()).toBe('token-2')
   })
 })
