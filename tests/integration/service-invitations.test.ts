@@ -60,8 +60,44 @@ describe('application enrollment invitations', () => {
     await expect(revokeInvitation({ db: getDb(), id: revoked.id, now })).resolves.toBe(true)
     await expect(consumeInvitation({ db: getDb(), secret: revoked.secret, now })).rejects.toThrow('Invitation is no longer valid')
   })
+
+  it('does not revoke an already consumed invitation', async () => {
+    const created = await createInvitation({ db: getDb(), sourceAppId: 'invite-app', now })
+    await consumeInvitation({ db: getDb(), secret: created.secret, now })
+
+    await expect(revokeInvitation({ db: getDb(), id: created.id, now })).resolves.toBe(false)
+    expect(await terminalMarkers(created.id)).toEqual({ consumed: true, revoked: false })
+  })
+
+  it('does not revoke an expired invitation', async () => {
+    const created = await createInvitation({ db: getDb(), sourceAppId: 'invite-app', now })
+
+    await expect(revokeInvitation({ db: getDb(), id: created.id, now: new Date(now.getTime() + 30 * 60_000) })).resolves.toBe(false)
+    expect(await terminalMarkers(created.id)).toEqual({ consumed: false, revoked: false })
+  })
+
+  it('allows exactly one terminal transition when consume and revoke race', async () => {
+    const created = await createInvitation({ db: getDb(), sourceAppId: 'invite-app', now })
+    const [consumption, revocation] = await Promise.allSettled([
+      consumeInvitation({ db: getDb(), secret: created.secret, now }),
+      revokeInvitation({ db: getDb(), id: created.id, now }),
+    ])
+
+    const consumeSucceeded = consumption.status === 'fulfilled'
+    const revokeSucceeded = revocation.status === 'fulfilled' && revocation.value
+    expect(Number(consumeSucceeded) + Number(revokeSucceeded)).toBe(1)
+    const markers = await terminalMarkers(created.id)
+    expect(markers.consumed !== markers.revoked).toBe(true)
+  })
 })
 
 function asDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value)
+}
+
+async function terminalMarkers(id: string): Promise<{ consumed: boolean; revoked: boolean }> {
+  const row = await getDb().execute<{ consumedAt: Date | null; revokedAt: Date | null }>(sql`
+    select consumed_at as "consumedAt", revoked_at as "revokedAt" from app_enrollment_grants where id = ${id}
+  `)
+  return { consumed: row.rows[0]?.consumedAt !== null, revoked: row.rows[0]?.revokedAt !== null }
 }

@@ -116,10 +116,14 @@ export async function revokeInvitation({
   id: string
   now?: Date
 }): Promise<boolean> {
+  // Revocation is actionable only while this grant can still be consumed.
   const result = await db.execute<{ id: string } & Record<string, unknown>>(sql`
     update app_enrollment_grants
        set revoked_at = ${now}
-     where id = ${id} and revoked_at is null
+     where id = ${id}
+       and consumed_at is null
+       and revoked_at is null
+       and expires_at > ${now}
      returning id
   `)
   return result.rows.length === 1
