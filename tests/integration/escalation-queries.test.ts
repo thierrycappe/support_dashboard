@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
 import { getEscalationQueue } from '@/lib/escalations/queries'
+import { getEscalationDetail } from '@/lib/escalations/detail'
 import { requireTestDatabaseUrl } from './helpers/database'
 
 process.env.DATABASE_URL = requireTestDatabaseUrl()
@@ -74,6 +75,26 @@ describe('escalation queue query', () => {
 
     expect(result.rows).toEqual([expect.objectContaining({ id: 'delivery-ticket', deliveryStatus: 'PENDING' })])
   })
+
+  it('loads canonical approval, hardened source context, and delivery attempts in chronological order', async () => {
+    await seedTicket({ id: 'detail-ticket', appId: 'app-a', title: 'Detail delivery history', priority: 'HIGH', status: 'NEW', createdAt: new Date('2026-08-09T08:00:00.000Z') })
+    await seedDelivery('detail-ticket', 'RETRYING')
+    await seedDeliveryAttempt('detail-ticket', 2, new Date('2026-08-12T09:05:00.000Z'), 'sent', null)
+    await seedDeliveryAttempt('detail-ticket', 1, new Date('2026-08-12T09:00:00.000Z'), 'retryable', 'Provider was temporarily unavailable.')
+
+    const detail = await getEscalationDetail('detail-ticket', getDb(), now)
+
+    expect(detail).toMatchObject({
+      ticket: { id: 'detail-ticket', title: 'Detail delivery history' },
+      application: { name: 'Atlas', sourceUrl: 'https://source.example/detail-ticket' },
+      approval: { ownerName: 'Source owner', ownerRef: 'owner' },
+      stale: true,
+    })
+    expect(detail?.deliveryAttempts.map(({ ordinal, resultClass }) => ({ ordinal, resultClass }))).toEqual([
+      { ordinal: 1, resultClass: 'retryable' },
+      { ordinal: 2, resultClass: 'sent' },
+    ])
+  })
 })
 
 async function seedApp(id: string, name: string): Promise<void> {
@@ -121,5 +142,14 @@ async function seedDelivery(ticketId: string, status: string, generation = 1, ta
        status, next_attempt_at, created_at, updated_at)
     values (${`outbox-${ticketId}-${generation}-${targetKey}-${outboxGeneration}`}, ${`event-${ticketId}-${generation}`}, ${`key-${ticketId}-${generation}`}, ${targetKey}, ${outboxGeneration}, ${channelId},
       ${channelId ? 'EMAIL' : 'PUSHOVER'}::"ChannelType", ${configSource}, '{}'::jsonb, ${status}::"DeliveryStatus", ${now}, ${now}, ${now})
+  `)
+}
+
+async function seedDeliveryAttempt(ticketId: string, ordinal: number, startedAt: Date, resultClass: string, sanitizedError: string | null): Promise<void> {
+  await getDb().execute(sql`
+    insert into delivery_attempts
+      (id, outbox_id, ordinal, target_key, started_at, finished_at, result_class, sanitized_error, created_at)
+    values (${`attempt-${ticketId}-${ordinal}`}, ${`outbox-${ticketId}-1-legacy:central-pushover-1`}, ${ordinal}, 'legacy:central-pushover',
+      ${startedAt}, ${startedAt}, ${resultClass}, ${sanitizedError}, ${startedAt})
   `)
 }

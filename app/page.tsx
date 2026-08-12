@@ -1,3 +1,5 @@
+import Link from 'next/link'
+import type { Route } from 'next'
 import { redirect } from 'next/navigation'
 import { auth } from '@/auth'
 import AppShell from '@/components/AppShell'
@@ -24,6 +26,7 @@ export default async function EscalationsPage({ searchParams }: { searchParams: 
     <AppShell>
       <header className="topbar">
         <div><p className="eyebrow">Technical follow-up</p><h1>Escalations</h1><p className="subtle">Business-approved feedback awaiting technical action across applications.</p></div>
+        <Link className="topbar-secondary-link" href={'/insights' as Route}>View insights</Link>
       </header>
       {!configured ? <InlineNotice tone="warning" title="Data is temporarily unavailable">Configure the application data connection, then reload this queue.</InlineNotice> : null}
       <dl className="summary-ledger" aria-label="Escalation summary">

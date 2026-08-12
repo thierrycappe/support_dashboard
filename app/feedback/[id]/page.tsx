@@ -1,125 +1,28 @@
-import { eq } from 'drizzle-orm'
 import { notFound, redirect } from 'next/navigation'
 import { auth } from '@/auth'
 import AppShell from '@/components/AppShell'
+import EscalationDetailContent from '@/components/escalations/EscalationDetailContent'
 import { getDb, hasDatabaseUrl } from '@/lib/db'
-import { feedbackTickets, sourceApps } from '@/lib/db/schema'
-import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
+import { getEscalationDetail } from '@/lib/escalations/detail'
 import { getSourceAppPullConfig } from '@/lib/feedback/source-pull'
-import {
-  isStaleTicket,
-  kindLabel,
-  visibleStatusLabel,
-} from '@/lib/feedback/status'
-import RefreshFromSourceButton from '@/components/RefreshFromSourceButton'
 
 export const dynamic = 'force-dynamic'
 
-export default async function FeedbackDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>
-}) {
+export default async function FeedbackDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth()
   if (!session?.user) redirect('/login')
 
   if (!hasDatabaseUrl()) {
-    return (
-      <AppShell>
-        <div className="setup-box">Database not configured.</div>
-      </AppShell>
-    )
+    return <AppShell><div className="setup-box">Data is temporarily unavailable. Configure the application data connection, then reload this escalation.</div></AppShell>
   }
 
   const { id } = await params
-  const db = getDb()
-  const rows = await db
-    .select({
-      ticket: feedbackTickets,
-      appName: sourceApps.name,
-      appSlug: sourceApps.slug,
-      appBaseUrl: sourceApps.baseUrl,
-    })
-    .from(feedbackTickets)
-    .innerJoin(sourceApps, eq(feedbackTickets.sourceAppId, sourceApps.id))
-    .where(eq(feedbackTickets.id, id))
-    .limit(1)
-
-  const row = rows[0]
-  if (!row) notFound()
-  const sourceTicketUrl = normalizeSourceTicketUrl(
-    row.ticket.url,
-    row.appBaseUrl,
-    row.appSlug,
-  )
-  const stale = isStaleTicket({
-    status: row.ticket.status,
-    lastSyncedAt: row.ticket.lastSyncedAt,
-  })
-  const pullConfigured = Boolean(getSourceAppPullConfig(row.appSlug))
+  const detail = await getEscalationDetail(id, getDb())
+  if (!detail) notFound()
 
   return (
     <AppShell>
-      <div className="topbar">
-        <div>
-          <p className="eyebrow">
-            {row.appName} · {row.ticket.externalId}
-          </p>
-          <h1>{row.ticket.title}</h1>
-          <p className="subtle">
-            {kindLabel(row.ticket.kind)} · {visibleStatusLabel(row.ticket.status)}
-            {stale && (
-              <span
-                className="badge badge-stale"
-                title={`No update from source app since ${row.ticket.lastSyncedAt?.toISOString()}`}
-                style={{ marginLeft: 8 }}
-              >
-                Stale sync
-              </span>
-            )}
-          </p>
-        </div>
-      </div>
-
-      <section className="grid two-column">
-        <div className="panel">
-          <div className="panel-body">
-            <h2>Description</h2>
-            <p style={{ whiteSpace: 'pre-wrap' }}>{row.ticket.description}</p>
-            {row.ticket.markdownSpec && (
-              <>
-                <h2>Specification</h2>
-                <pre style={{ whiteSpace: 'pre-wrap' }}>{row.ticket.markdownSpec}</pre>
-              </>
-            )}
-          </div>
-        </div>
-        <aside className="panel">
-          <div className="panel-body">
-            <h2>Context</h2>
-            <p>
-              <strong>App:</strong> {row.appName} ({row.appSlug})
-            </p>
-            <p>
-              <strong>Priority:</strong> {row.ticket.priority}
-            </p>
-            <p>
-              <strong>Reporter:</strong>{' '}
-              {row.ticket.reporterEmail ?? row.ticket.reporterName ?? 'Unknown'}
-            </p>
-            {sourceTicketUrl && (
-              <p>
-                <strong>URL:</strong> {sourceTicketUrl}
-              </p>
-            )}
-            {pullConfigured && (
-              <div style={{ marginTop: 16 }}>
-                <RefreshFromSourceButton ticketId={row.ticket.id} />
-              </div>
-            )}
-          </div>
-        </aside>
-      </section>
+      <EscalationDetailContent detail={{ ...detail, pullConfigured: Boolean(getSourceAppPullConfig(detail.application.slug)) }} />
     </AppShell>
   )
 }
