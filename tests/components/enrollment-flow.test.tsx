@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import Link from 'next/link'
 import { describe, expect, it, vi } from 'vitest'
 import EnrollmentFlow from '@/components/enrollment/EnrollmentFlow'
 import InvitationReveal from '@/components/enrollment/InvitationReveal'
@@ -56,6 +59,8 @@ describe('application enrollment flow', () => {
 
   it('makes a revealed secret irrecoverable in the component after it is hidden', async () => {
     render(<InvitationReveal appId="app-1" invitationId="grant-1" invitationSecret="one-time-secret" expiresAt="2026-08-12T15:30:00.000Z" />)
+    expect(screen.getByRole('button', { name: 'Hide invitation' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('checkbox', { name: /stored this invitation/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Hide invitation' }))
     expect(screen.queryByText('one-time-secret')).toBeNull()
     expect(screen.getByText('Invitation hidden')).toBeVisible()
@@ -63,10 +68,48 @@ describe('application enrollment flow', () => {
     await waitFor(() => expect(screen.getByRole('link', { name: 'View application' })).toHaveAttribute('href', '/apps/app-1'))
   })
 
-  it('clears the one-time secret when the page is left so history cannot reveal it', () => {
+  it('blocks refresh, browser back, and sidebar links until storage is acknowledged', () => {
+    render(<><Link href="/apps">Applications</Link><InvitationReveal appId="app-1" invitationId="grant-1" invitationSecret="one-time-secret" expiresAt="2026-08-12T15:30:00.000Z" /></>)
+    const leaving = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(leaving)
+    expect(leaving.defaultPrevented).toBe(true)
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Applications' }))).toBe(false)
+    fireEvent.popState(window)
+    expect(screen.getByRole('alert')).toHaveTextContent('Store or copy the invitation before leaving this screen.')
+    expect(screen.getByText('one-time-secret')).toBeVisible()
+    fireEvent.click(screen.getByRole('checkbox', { name: /stored this invitation/ }))
+    const acknowledgedLeaving = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(acknowledgedLeaving)
+    expect(acknowledgedLeaving.defaultPrevented).toBe(false)
+  })
+
+  it('clears an acknowledged secret on pagehide so browser cache cannot restore it', () => {
     render(<InvitationReveal appId="app-1" invitationId="grant-1" invitationSecret="one-time-secret" expiresAt="2026-08-12T15:30:00.000Z" />)
-    fireEvent(window, new PageTransitionEvent('pagehide'))
+    fireEvent.click(screen.getByRole('checkbox', { name: /stored this invitation/ }))
+    fireEvent(window, new PageTransitionEvent('pagehide', { persisted: true }))
+    expect(screen.queryByText('one-time-secret')).toBeNull()
+    fireEvent.popState(window)
     expect(screen.queryByText('one-time-secret')).toBeNull()
     expect(screen.getByText('Invitation hidden')).toBeVisible()
+  })
+
+  it('keeps manual copy available and shows factual recovery when clipboard access fails', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+    render(<InvitationReveal appId="app-1" invitationId="grant-1" invitationSecret="one-time-secret" expiresAt="2026-08-12T15:30:00.000Z" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy invitation' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invitation was not copied. Select the values and copy them manually.')
+    expect(screen.getByText('one-time-secret')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Hide invitation' })).toBeDisabled()
+  })
+
+  it('renders one semantic step number and stacks owners and actions at small widths', () => {
+    render(<EnrollmentFlow owners={owners} action={vi.fn()} />)
+    const progress = screen.getByRole('navigation', { name: 'Enrollment progress' })
+    expect(progress).toHaveTextContent('ApplicationOwnersAlertsInvitation')
+    expect(progress).not.toHaveTextContent('1. Application')
+    const css = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8')
+    expect(css).toMatch(/\.enrollment-steps\s*\{[\s\S]*?list-style-position:\s*inside/)
+    expect(css).toMatch(/\.enrollment-owner-list label,[\s\S]*?min-height:\s*44px/)
+    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.enrollment-actions\s*\{[\s\S]*?flex-direction:\s*column/)
   })
 })

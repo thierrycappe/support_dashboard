@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { requireAdminUser } from '@/lib/auth/guards'
 import { setAppPolicy } from '@/lib/routing/policies'
 import { createApplicationEnrollment } from '@/lib/apps/queries'
+import { applicationBaseUrlIssue } from '@/lib/apps/validation'
 
 export type ActionState =
   | { status: 'idle' }
@@ -28,7 +29,12 @@ const policySchema = z.object({
 const enrollmentSchema = z.object({
   name: z.string().trim().min(1, 'Enter an application name, then continue.').max(160),
   slug: z.string().trim().min(1, 'Enter a stable slug, then continue.').max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Use lowercase letters, numbers, and single hyphens.'),
-  baseUrl: z.string().trim().url('Enter a complete application URL.').refine((value) => new URL(value).protocol === 'https:', 'Use an HTTPS application URL.'),
+  baseUrl: z.string().trim().superRefine((value, context) => {
+    const issue = applicationBaseUrlIssue(value)
+    if (issue === 'INVALID_URL') context.addIssue({ code: 'custom', message: 'Enter a complete application URL.' })
+    if (issue === 'HTTPS_REQUIRED') context.addIssue({ code: 'custom', message: 'Use an HTTPS application URL.' })
+    if (issue === 'CREDENTIALS_FORBIDDEN') context.addIssue({ code: 'custom', message: 'Remove credentials from the application URL.' })
+  }),
   environment: z.string().trim().min(1, 'Select an environment.').max(80),
   ownerIds: z.array(z.string().trim().min(1)).min(1, 'Select at least one owner, then continue.'),
   minimumPriority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']),
@@ -44,13 +50,15 @@ export async function createEnrollmentAction(_previous: EnrollmentActionState, f
     fallbackToCentral: formData.get('fallbackToCentral') === 'on',
   })
   if (!parsed.success) return { status: 'error', message: 'Please correct the highlighted fields', fieldErrors: parsed.error.flatten().fieldErrors }
+  let result: Awaited<ReturnType<typeof createApplicationEnrollment>>
   try {
-    const result = await createApplicationEnrollment({ ...parsed.data, actorId: user.id, correlationId: randomUUID() })
-    revalidatePath('/apps'); revalidatePath(`/apps/${result.appId}`)
-    return { status: 'created', appId: result.appId, invitationId: result.invitation.id, invitationSecret: result.invitation.secret, expiresAt: result.invitation.expiresAt.toISOString() }
+    result = await createApplicationEnrollment({ ...parsed.data, actorId: user.id, correlationId: randomUUID() })
   } catch {
     return { status: 'error', message: 'Application enrollment was not created. Review the details and try again.', fieldErrors: {} }
   }
+  try { revalidatePath('/apps') } catch { /* The committed invitation must still be returned. */ }
+  try { revalidatePath(`/apps/${result.appId}`) } catch { /* Cache invalidation is best effort after commit. */ }
+  return { status: 'created', appId: result.appId, invitationId: result.invitation.id, invitationSecret: result.invitation.secret, expiresAt: result.invitation.expiresAt.toISOString() }
 }
 
 export async function updateAppPolicyAction(_previous: ActionState, formData: FormData): Promise<ActionState> {

@@ -114,3 +114,49 @@ was serialized while a secret was visible.
 
 - Browser viewport verification is outstanding solely because the requested
   in-app browser backend was unavailable in this agent runtime.
+
+## Fix Round 1 — Sol review
+
+### Implementation
+
+- One-time invitations now require an explicit stored/copied acknowledgement
+  before Hide or navigation. Refresh, sidebar links, and Back are guarded while
+  unacknowledged; `pagehide` always destroys plaintext, including BFCache
+  departures after acknowledgement. Clipboard denial leaves both values visible
+  for manual copy and uses a separate factual message from navigation warnings.
+- Cache invalidation is best effort after the enrollment transaction commits,
+  so invalidation failure cannot discard the only plaintext response.
+- Shared URL validation rejects malformed, non-HTTPS, and credential-bearing
+  application URLs before persistence; detail output fails closed for unsafe
+  legacy values.
+- Application counts reuse the escalation queue's canonical approved-triage SQL.
+- Progress uses one semantic ordered-list marker; owner choices are 44px flex
+  rows, and action groups stack at the existing small-screen breakpoint.
+
+### RED / GREEN evidence
+
+Initial focused execution failed six unit/component and two live PostgreSQL
+assertions covering every review finding. A final deliberate malformed-URL test
+failed with `TypeError: Invalid URL`, then passed through the consolidated safe
+validator.
+
+| Gate | Result |
+|---|---|
+| Focused action/component suite | 2 files, 14 tests passed |
+| Focused Task19 live PostgreSQL suite | 1 file, 4 tests passed |
+| Existing escalation-query live suite | 1 file, 5 tests passed |
+| Complete tracked unit/component inventory | 36 files, 244 tests passed |
+| Scoped ESLint and `git diff --check` | passed |
+
+The combined type/build gate is temporarily blocked only by concurrent Task20
+RED imports for operations components that are not part of this commit. Root
+will run the combined shared-worktree gates after Task20 lands.
+
+### Self-review
+
+- Navigation and clipboard messages are distinct and factually accurate.
+- The unconditional `pagehide` listener prevents browser Back from reviving an
+  acknowledged component state containing plaintext.
+- Repository and action paths share URL safety; existing unsafe data is not
+  rendered.
+- No Task20, progress-ledger, or generated Next.js changes are included.

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
-import { createApplicationEnrollment, getApplicationDetail } from '@/lib/apps/queries'
+import { createApplicationEnrollment, getApplicationDetail, getApplications } from '@/lib/apps/queries'
 import { requireTestDatabaseUrl } from './helpers/database'
 
 process.env.DATABASE_URL = requireTestDatabaseUrl()
@@ -45,6 +45,23 @@ describe('application enrollment administration', () => {
     await expect(createApplicationEnrollment({ db: getDb(), actorId: 'admin-1', correlationId: ' ', name: 'Beacon Billing', slug: 'beacon-billing', baseUrl: 'https://beacon.example.test', environment: 'production', ownerIds: ['owner-1'], minimumPriority: 'MEDIUM', urgentCentralCopy: true, fallbackToCentral: true, now })).rejects.toThrow('correlationId is required')
     expect(await count(sql`select count(*)::int as count from source_apps where slug='beacon-billing'`)).toBe(0)
     expect(await count(sql`select count(*)::int as count from support_groups where name='Beacon Billing owners'`)).toBe(0)
+  })
+
+  it('rejects credential-bearing URLs without persistence or detail exposure', async () => {
+    await expect(createApplicationEnrollment({ db: getDb(), actorId: 'admin-1', correlationId: randomUUID(), name: 'Unsafe app', slug: 'unsafe-app', baseUrl: 'https://operator:secret@unsafe.example.test', environment: 'production', ownerIds: ['owner-1'], minimumPriority: 'MEDIUM', urgentCentralCopy: true, fallbackToCentral: true, now })).rejects.toThrow('Invalid application URL')
+    expect(await count(sql`select count(*)::int as count from source_apps where slug='unsafe-app'`)).toBe(0)
+  })
+
+  it('counts only canonically business-approved open escalations', async () => {
+    const result = await createApplicationEnrollment({ db: getDb(), actorId: 'admin-1', correlationId: randomUUID(), name: 'Counted app', slug: 'counted-app', baseUrl: 'https://counted.example.test', environment: 'production', ownerIds: ['owner-1'], minimumPriority: 'MEDIUM', urgentCentralCopy: true, fallbackToCentral: true, now })
+    await getDb().execute(sql`
+      insert into feedback_tickets (id,source_app_id,external_id,kind,status,priority,title,description,raw_payload,triage,last_synced_at,created_at,updated_at) values
+      ('approved-ticket',${result.appId},'approved','BUG','NEW','MEDIUM','Approved','Details','{}'::jsonb,'{"ownerRef":"owner","ownerName":null,"escalatedAt":"2026-08-12T15:00:00.000Z"}'::jsonb,${now},${now},${now}),
+      ('unapproved-ticket',${result.appId},'unapproved','BUG','NEW','MEDIUM','Unapproved','Details','{}'::jsonb,null,${now},${now},${now}),
+      ('malformed-ticket',${result.appId},'malformed','BUG','NEW','MEDIUM','Malformed','Details','{}'::jsonb,'{"ownerRef":"owner","ownerName":null,"escalatedAt":"bad"}'::jsonb,${now},${now},${now})
+    `)
+    expect(await getApplications(getDb())).toEqual([expect.objectContaining({ id: result.appId, openCount: 1 })])
+    await expect(getApplicationDetail(result.appId, getDb(), now)).resolves.toMatchObject({ openCount: 1 })
   })
 })
 

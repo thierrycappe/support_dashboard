@@ -4,6 +4,7 @@ import type { FeedbackKind, FeedbackPriority, FeedbackStatus } from '@/lib/feedb
 import { OPEN_STATUSES } from '@/lib/feedback/status'
 import { normalizeSourceTicketUrl } from '@/lib/feedback/links'
 import { decodeEscalationCursor, encodeEscalationCursor } from '@/lib/escalations/search-params'
+import { canonicalApprovedTriageSql } from '@/lib/escalations/approval'
 
 export interface EscalationQueueInput {
   search?: string
@@ -59,17 +60,7 @@ export async function getEscalationQueue({
   const selectedStatusSql = sql.join(selectedStatuses.map((status) => sql`${status}::"FeedbackStatus"`), sql`, `)
   const openStatusSql = sql.join(OPEN_STATUSES.map((status) => sql`${status}::"FeedbackStatus"`), sql`, `)
   const currentDay = now.toISOString().slice(0, 10)
-  const approvedTriageSql = sql`
-    ticket.triage is not null
-    and jsonb_typeof(ticket.triage) = 'object'
-    and ticket.triage ?& array['ownerRef', 'ownerName', 'escalatedAt']
-    and ticket.triage - 'ownerRef' - 'ownerName' - 'escalatedAt' = '{}'::jsonb
-    and jsonb_typeof(ticket.triage->'ownerRef') = 'string'
-    and char_length(btrim(ticket.triage->>'ownerRef')) between 1 and 200
-    and (ticket.triage->'ownerName' = 'null'::jsonb or (jsonb_typeof(ticket.triage->'ownerName') = 'string' and char_length(ticket.triage->>'ownerName') <= 200))
-    and jsonb_typeof(ticket.triage->'escalatedAt') = 'string'
-    and ticket.triage->>'escalatedAt' ~ '^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d{1,9})?Z$'
-  `
+  const approvedTriageSql = canonicalApprovedTriageSql(sql`ticket.triage`)
   const rowQuery = db.execute<QueueDbRow>(sql`
     select ticket.id, ticket.title, ticket.source_app_id as "appId", app.name as "appName",
            app.base_url as "appBaseUrl", app.slug as "appSlug",

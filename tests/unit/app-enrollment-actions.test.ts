@@ -28,6 +28,22 @@ describe('create enrollment action', () => {
     expect(mocks.createApplicationEnrollment).not.toHaveBeenCalled()
   })
 
+  it('rejects an HTTPS application URL containing credentials before persistence', async () => {
+    const form = validForm(); form.set('baseUrl', 'https://operator:secret@atlas.example.test')
+    await expect(createEnrollmentAction({ status: 'idle' }, form)).resolves.toMatchObject({
+      status: 'error', fieldErrors: { baseUrl: ['Remove credentials from the application URL.'] },
+    })
+    expect(mocks.createApplicationEnrollment).not.toHaveBeenCalled()
+  })
+
+  it('returns a stable field error for a malformed application URL', async () => {
+    const form = validForm(); form.set('baseUrl', 'not-a-url')
+    await expect(createEnrollmentAction({ status: 'idle' }, form)).resolves.toMatchObject({
+      status: 'error', fieldErrors: { baseUrl: ['Enter a complete application URL.'] },
+    })
+    expect(mocks.createApplicationEnrollment).not.toHaveBeenCalled()
+  })
+
   it('returns the invitation exactly once from an admin-created transaction', async () => {
     await expect(createEnrollmentAction({ status: 'idle' }, validForm())).resolves.toEqual({
       status: 'created', appId: 'app-1', invitationId: 'grant-1', invitationSecret: 'secret', expiresAt: '2026-08-12T15:30:00.000Z',
@@ -37,6 +53,13 @@ describe('create enrollment action', () => {
     }))
     expect(mocks.revalidatePath).toHaveBeenCalledWith('/apps')
     expect(mocks.revalidatePath).toHaveBeenCalledWith('/apps/app-1')
+  })
+
+  it('returns a committed invitation even when route invalidation fails', async () => {
+    mocks.revalidatePath.mockImplementation(() => { throw new Error('invalidation unavailable') })
+    await expect(createEnrollmentAction({ status: 'idle' }, validForm())).resolves.toMatchObject({
+      status: 'created', appId: 'app-1', invitationSecret: 'secret',
+    })
   })
 })
 

@@ -772,6 +772,50 @@ pre {
   gap: var(--space-2);
 }
 
+.enrollment-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-6);
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  list-style-position: inside;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.enrollment-steps [aria-current='step'] {
+  color: var(--accent);
+}
+
+.enrollment-owner-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.enrollment-owner-list legend {
+  margin-bottom: var(--space-2);
+  font-weight: 700;
+}
+
+.enrollment-owner-list label,
+.enrollment-acknowledgement {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+}
+
+.enrollment-owner-list label:hover,
+.enrollment-acknowledgement:hover {
+  background: var(--surface-subtle);
+}
+
 .icon-button {
   width: 40px;
   height: 40px;
@@ -1289,6 +1333,15 @@ pre {
 
   .queue-filter-actions {
     flex-direction: column;
+  }
+
+  .enrollment-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .enrollment-actions .ui-button {
+    width: 100%;
   }
 
   .queue-pagination {
