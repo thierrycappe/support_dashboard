@@ -76,14 +76,60 @@ describe('version 1 escalation contract', () => {
     expect(parsed.success).toBe(false)
   })
 
-  it('rejects unknown nested fields and non-canonical status values', () => {
-    expect(
-      escalationV1Schema.safeParse({
-        ...validV1,
-        status: 'fixed',
-        triage: { ...validV1.triage, sourceApp: 'other' },
-      }).success,
-    ).toBe(false)
+  it('rejects an unknown root field', () => {
+    const parsed = escalationV1Schema.safeParse({
+      ...validV1,
+      deliveryHint: 'central',
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects a legacy status alias', () => {
+    const parsed = escalationV1Schema.safeParse({
+      ...validV1,
+      status: 'fixed',
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects a legacy priority alias', () => {
+    const parsed = escalationV1Schema.safeParse({
+      ...validV1,
+      priority: 'critical',
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects an unknown triage field', () => {
+    const parsed = escalationV1Schema.safeParse({
+      ...validV1,
+      triage: { ...validV1.triage, sourceApp: 'other' },
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects an unknown reporter field', () => {
+    const parsed = escalationV1Schema.safeParse({
+      ...validV1,
+      reporter: { ...validV1.reporter, accountId: 'other' },
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects an unknown transcript-message field', () => {
+    const parsed = escalationV1Schema.safeParse({
+      ...validV1,
+      transcript: [
+        { ...validV1.transcript[0], authorId: 'payload-controlled' },
+      ],
+    })
+
+    expect(parsed.success).toBe(false)
   })
 
   it('rejects a payload larger than the decoded 256 KB route limit', () => {
@@ -130,7 +176,7 @@ describe('version 1 escalation contract', () => {
 
 describe('legacy escalation adapter', () => {
   it('preserves legacy aliases while mapping the payload to the shared command', () => {
-    const command = legacyPayloadToCommand(
+    const { authoritativeAppId, command } = legacyPayloadToCommand(
       feedbackIngestSchema.parse({
         app: {
           slug: 'sales-portal',
@@ -155,6 +201,7 @@ describe('legacy escalation adapter', () => {
       'app_authoritative',
     )
 
+    expect(authoritativeAppId).toBe('app_authoritative')
     expect(command).toMatchObject({
       externalId: 'fb_123',
       kind: 'EVOLUTION',
@@ -169,11 +216,51 @@ describe('legacy escalation adapter', () => {
     })
   })
 
+  it('keeps supplied authority separate from payload-controlled app identity', () => {
+    const first = legacyPayloadToCommand(
+      feedbackIngestSchema.parse({
+        app: {
+          slug: 'payload-app-one',
+          name: 'Payload App One',
+          metadata: { claimedApp: 'one' },
+        },
+        ticket: {
+          externalId: 'fb_125',
+          title: 'First payload identity',
+          description: 'Payload app fields are descriptive only.',
+        },
+      }),
+      'registered-app-id',
+    )
+    const second = legacyPayloadToCommand(
+      feedbackIngestSchema.parse({
+        app: {
+          slug: 'payload-app-two',
+          name: 'Payload App Two',
+          metadata: { claimedApp: 'two' },
+        },
+        ticket: {
+          externalId: 'fb_125',
+          title: 'Second payload identity',
+          description: 'Payload app fields still cannot replace authority.',
+        },
+      }),
+      'registered-app-id',
+    )
+
+    expect(first.authoritativeAppId).toBe('registered-app-id')
+    expect(second.authoritativeAppId).toBe('registered-app-id')
+    expect(first.command).not.toHaveProperty('authoritativeAppId')
+    expect(second.command).not.toHaveProperty('authoritativeAppId')
+    expect(first.command.metadata).toEqual({ claimedApp: 'one' })
+    expect(second.command.metadata).toEqual({ claimedApp: 'two' })
+  })
+
   it('uses receipt time when a legacy ticket has no remote update time', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-12T13:00:00.000Z'))
 
-    const command = legacyPayloadToCommand(
+    const { command } = legacyPayloadToCommand(
       feedbackIngestSchema.parse({
         app: { slug: 'sales-portal', name: 'Sales Portal' },
         ticket: {

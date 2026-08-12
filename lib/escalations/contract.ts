@@ -73,6 +73,11 @@ export interface EscalationCommand {
   metadata: Record<string, unknown>
 }
 
+export interface LegacyEscalationNormalization {
+  authoritativeAppId: string
+  command: EscalationCommand
+}
+
 const escalationV1PayloadSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -125,42 +130,41 @@ export const escalationV1Schema = escalationV1PayloadSchema.transform(
 export function legacyPayloadToCommand(
   payload: FeedbackIngestPayload,
   authoritativeAppId: string,
-): EscalationCommand {
-  // The caller resolves this ID from the authenticated legacy credential or pull
-  // configuration. It deliberately never comes from the legacy payload.
-  void authoritativeAppId
-
+): LegacyEscalationNormalization {
   const ticket = payload.ticket
   const receivedAt = new Date().toISOString()
 
   return {
-    externalId: ticket.externalId,
-    kind: ticket.kind,
-    status: normalizeFeedbackStatus(ticket.status) ?? ticket.status,
-    priority: normalizeFeedbackPriority(ticket.priority) ?? ticket.priority,
-    title: ticket.title,
-    description: ticket.description,
-    sourceUrl: normalizeSourceTicketUrl(
-      ticket.url,
-      payload.app.baseUrl,
-      payload.app.slug,
-    ),
-    triage: {
-      ownerRef: 'legacy-source',
-      ownerName: null,
-      escalatedAt: ticket.remoteUpdatedAt ?? receivedAt,
+    authoritativeAppId,
+    command: {
+      externalId: ticket.externalId,
+      kind: ticket.kind,
+      status: normalizeFeedbackStatus(ticket.status) ?? ticket.status,
+      priority: normalizeFeedbackPriority(ticket.priority) ?? ticket.priority,
+      title: ticket.title,
+      description: ticket.description,
+      sourceUrl: normalizeSourceTicketUrl(
+        ticket.url,
+        payload.app.baseUrl,
+        payload.app.slug,
+      ),
+      triage: {
+        ownerRef: 'legacy-source',
+        ownerName: null,
+        escalatedAt: ticket.remoteUpdatedAt ?? receivedAt,
+      },
+      reporter: {
+        name: ticket.reporterName ?? null,
+        email: ticket.reporterEmail ?? null,
+        sourceId: ticket.reporterId ?? null,
+      },
+      browserInfo: ticket.browserInfo ?? null,
+      markdownSpec: ticket.markdownSpec ?? null,
+      transcript: ticket.transcript ?? null,
+      remoteCreatedAt: ticket.remoteCreatedAt ?? null,
+      remoteUpdatedAt: ticket.remoteUpdatedAt ?? null,
+      metadata: payload.app.metadata ?? {},
     },
-    reporter: {
-      name: ticket.reporterName ?? null,
-      email: ticket.reporterEmail ?? null,
-      sourceId: ticket.reporterId ?? null,
-    },
-    browserInfo: ticket.browserInfo ?? null,
-    markdownSpec: ticket.markdownSpec ?? null,
-    transcript: ticket.transcript ?? null,
-    remoteCreatedAt: ticket.remoteCreatedAt ?? null,
-    remoteUpdatedAt: ticket.remoteUpdatedAt ?? null,
-    metadata: payload.app.metadata ?? {},
   }
 }
 
