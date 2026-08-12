@@ -14,6 +14,7 @@ export interface ServicePrincipal {
 
 const CLOCK_TOLERANCE_SECONDS = 5
 const MAX_ASSERTION_LIFETIME_SECONDS = 60
+const DEFAULT_REPLAY_CLEANUP_LIMIT = 100
 const allowedScopes = new Set<ServiceScope>(['escalations:write', 'credentials:rotate'])
 
 export async function verifyClientAssertion({
@@ -78,6 +79,39 @@ export async function recordAssertionReplay({
       returning id
   `)
   if (!inserted.rows[0]) throw new Error('Assertion replayed')
+}
+
+/**
+ * Deletes a bounded batch of markers only after their JWT expiry plus the
+ * verification tolerance. This is maintenance-only: callers run it outside
+ * authentication, so a cleanup failure cannot reject a valid assertion.
+ */
+export async function cleanupExpiredAssertionReplays({
+  db = getDb(),
+  now = new Date(),
+  limit = DEFAULT_REPLAY_CLEANUP_LIMIT,
+}: {
+  db?: Db
+  now?: Date
+  limit?: number
+} = {}): Promise<number> {
+  const boundedLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 500) : DEFAULT_REPLAY_CLEANUP_LIMIT
+  const threshold = new Date(now.getTime() - CLOCK_TOLERANCE_SECONDS * 1_000)
+  const deleted = await db.execute<{ id: string } & Record<string, unknown>>(sql`
+    with candidates as (
+      select id
+        from service_assertion_replays
+       where expires_at < ${threshold}
+       order by expires_at, id
+       limit ${boundedLimit}
+       for update skip locked
+    )
+    delete from service_assertion_replays replay
+     using candidates
+     where replay.id = candidates.id
+     returning replay.id
+  `)
+  return deleted.rows.length
 }
 
 function parseScopes(value: unknown): ServiceScope[] {

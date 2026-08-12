@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { sql } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
-import { verifyClientAssertion } from '@/lib/service-auth/assertions'
+import { cleanupExpiredAssertionReplays, verifyClientAssertion } from '@/lib/service-auth/assertions'
 import { getActiveCredential } from '@/lib/service-auth/credentials'
 import { requireTestDatabaseUrl } from './helpers/database'
 
@@ -67,6 +67,29 @@ describe('service assertion replay protection', () => {
     await expect(verifyClientAssertion({ db: getDb(), assertion: await signedAssertion(`owner-${status}-${enrollmentStatus}`), audience, now })).rejects.toThrow('Invalid client assertion')
     await expect(getActiveCredential({ db: getDb(), credentialId: 'credential-1', now })).resolves.toBeNull()
   })
+
+  it('removes only replay markers older than expiration plus the five-second tolerance', async () => {
+    await seedReplay('expired-replay', new Date(now.getTime() - 6_000))
+    await seedReplay('tolerated-replay', new Date(now.getTime() - 5_000))
+
+    await expect(cleanupExpiredAssertionReplays({ db: getDb(), now, limit: 100 })).resolves.toBe(1)
+    expect(await replayIds()).toEqual(['tolerated-replay'])
+  })
+
+  it('retains a marker through tolerance so the assertion still cannot replay', async () => {
+    const assertion = await signedAssertion('within-tolerance')
+    await verifyClientAssertion({ db: getDb(), assertion, audience, now })
+
+    await cleanupExpiredAssertionReplays({ db: getDb(), now: new Date(now.getTime() + 34_000), limit: 100 })
+    await expect(verifyClientAssertion({ db: getDb(), assertion, audience, now: new Date(now.getTime() + 34_000) })).rejects.toThrow('Invalid client assertion')
+  })
+
+  it('bounds cleanup to the requested batch size', async () => {
+    await Promise.all(Array.from({ length: 3 }, (_, index) => seedReplay(`expired-${index}`, new Date(now.getTime() - 6_000))))
+
+    await expect(cleanupExpiredAssertionReplays({ db: getDb(), now, limit: 2 })).resolves.toBe(2)
+    expect(await replayIds()).toHaveLength(1)
+  })
 })
 
 async function signedAssertion(jti: string): Promise<string> {
@@ -80,4 +103,18 @@ async function signedAssertion(jti: string): Promise<string> {
     .setExpirationTime(seconds + 30)
     .setJti(jti)
     .sign(privateKey)
+}
+
+async function seedReplay(jti: string, expiresAt: Date): Promise<void> {
+  await getDb().execute(sql`
+    insert into service_assertion_replays (id, credential_id, assertion_jti, expires_at, created_at)
+      values (${`replay-${jti}`}, 'credential-1', ${jti}, ${expiresAt}, ${now})
+  `)
+}
+
+async function replayIds(): Promise<string[]> {
+  const rows = await getDb().execute<{ jti: string }>(sql`
+    select assertion_jti as jti from service_assertion_replays order by assertion_jti
+  `)
+  return rows.rows.map((row) => row.jti)
 }
