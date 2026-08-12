@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { sql } from 'drizzle-orm'
-import { closeDbPool, getDb } from '@/lib/db'
+import { closeDbPool, getDb, getDbPool } from '@/lib/db'
 import { cleanupExpiredAssertionReplays, verifyClientAssertion } from '@/lib/service-auth/assertions'
 import { getActiveCredential } from '@/lib/service-auth/credentials'
 import { requireTestDatabaseUrl } from './helpers/database'
@@ -89,6 +89,22 @@ describe('service assertion replay protection', () => {
 
     await expect(cleanupExpiredAssertionReplays({ db: getDb(), now, limit: 2 })).resolves.toBe(2)
     expect(await replayIds()).toHaveLength(1)
+  })
+
+  it('settles a blocked cleanup through transaction-local statement timeout', async () => {
+    const blocker = await getDbPool().connect()
+    try {
+      await blocker.query('begin')
+      await blocker.query('lock table service_assertion_replays in access exclusive mode')
+
+      await expect(cleanupExpiredAssertionReplays({ db: getDb(), now, limit: 100, statementTimeoutMs: 50 }))
+        .rejects.toMatchObject({ cause: { code: '57014' } })
+    } finally {
+      await blocker.query('rollback')
+      blocker.release()
+    }
+
+    await expect(cleanupExpiredAssertionReplays({ db: getDb(), now, limit: 100, statementTimeoutMs: 100 })).resolves.toBe(0)
   })
 })
 

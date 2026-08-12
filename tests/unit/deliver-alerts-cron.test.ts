@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   drainImmediateDeliveries: vi.fn(async () => ({ started: 12, batches: 1 })),
-  cleanupExpiredAssertionReplays: vi.fn(async () => 0),
+  cleanupExpiredAssertionReplays: vi.fn(async (options?: { statementTimeoutMs?: number }) => Number(options?.statementTimeoutMs) * 0),
 }))
 
 vi.mock('@/lib/delivery/worker', () => ({ drainImmediateDeliveries: mocks.drainImmediateDeliveries }))
@@ -71,14 +71,29 @@ describe('deliver alerts cron', () => {
     expect(JSON.stringify(body)).not.toContain('database secret detail')
   })
 
-  it('returns after the replay cleanup time cap without blocking delivery recovery', async () => {
+  it('does not return while timed-out cleanup work is still running', async () => {
     vi.useFakeTimers()
-    mocks.cleanupExpiredAssertionReplays.mockImplementation(() => new Promise<number>(() => undefined))
+    let inFlight = 0
+    mocks.cleanupExpiredAssertionReplays.mockImplementation((options?: { statementTimeoutMs?: number }) => new Promise<number>((_resolve, reject) => {
+      inFlight += 1
+      setTimeout(() => {
+        inFlight -= 1
+        reject(Object.assign(new Error('query cancelled'), { code: '57014' }))
+      }, options?.statementTimeoutMs ?? 1_100)
+    }))
 
     const responsePromise = GET(authorizedRequest())
     await vi.advanceTimersByTimeAsync(1_000)
+    let returned = false
+    void responsePromise.then(() => { returned = true })
+    await Promise.resolve()
+
+    expect({ returned, inFlight }).not.toEqual({ returned: true, inFlight: 1 })
+    expect(inFlight).toBe(0)
+    await vi.runAllTimersAsync()
     const response = await responsePromise
 
+    expect(inFlight).toBe(0)
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({
       started: 12,

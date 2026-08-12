@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { decodeProtectedHeader, importJWK, jwtVerify } from 'jose'
 import { sql } from 'drizzle-orm'
-import { getDb, type Db } from '@/lib/db'
+import { getDb, type Db, type DbTransaction } from '@/lib/db'
 import { getActiveCredential } from '@/lib/service-auth/credentials'
 
 export type ServiceScope = 'escalations:write' | 'credentials:rotate'
@@ -90,20 +90,37 @@ export async function cleanupExpiredAssertionReplays({
   db = getDb(),
   now = new Date(),
   limit = DEFAULT_REPLAY_CLEANUP_LIMIT,
+  statementTimeoutMs,
 }: {
   db?: Db
   now?: Date
   limit?: number
+  statementTimeoutMs?: number
 } = {}): Promise<number> {
   const boundedLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 500) : DEFAULT_REPLAY_CLEANUP_LIMIT
   const threshold = new Date(now.getTime() - CLOCK_TOLERANCE_SECONDS * 1_000)
+  if (statementTimeoutMs === undefined) return deleteExpiredAssertionReplays(db, threshold, boundedLimit)
+  const boundedTimeoutMs = Math.min(Math.max(Math.floor(statementTimeoutMs), 1), 60_000)
+  const deadline = Date.now() + boundedTimeoutMs
+  return db.transaction(async (tx) => {
+    const remainingMs = Math.max(deadline - Date.now(), 1)
+    await tx.execute(sql`select set_config('statement_timeout', ${`${remainingMs}ms`}, true)`)
+    return deleteExpiredAssertionReplays(tx, threshold, boundedLimit)
+  })
+}
+
+async function deleteExpiredAssertionReplays(
+  db: Db | DbTransaction,
+  threshold: Date,
+  limit: number,
+): Promise<number> {
   const deleted = await db.execute<{ id: string } & Record<string, unknown>>(sql`
     with candidates as (
       select id
         from service_assertion_replays
        where expires_at < ${threshold}
        order by expires_at, id
-       limit ${boundedLimit}
+       limit ${limit}
        for update skip locked
     )
     delete from service_assertion_replays replay

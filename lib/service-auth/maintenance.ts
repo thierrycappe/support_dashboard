@@ -13,36 +13,31 @@ export interface AssertionReplayCleanupOutcome {
 
 export async function drainExpiredAssertionReplays(): Promise<AssertionReplayCleanupOutcome> {
   const metrics = { rowsDeleted: 0, batches: 0 }
-  let timedOut = false
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined
-
-  const work = (async (): Promise<AssertionReplayCleanupOutcome> => {
-    try {
-      while (
-        !timedOut
-        && metrics.batches < REPLAY_CLEANUP_MAX_BATCHES
-        && metrics.rowsDeleted < REPLAY_CLEANUP_MAX_ROWS
-      ) {
-        const limit = Math.min(REPLAY_CLEANUP_BATCH_SIZE, REPLAY_CLEANUP_MAX_ROWS - metrics.rowsDeleted)
-        const deleted = await cleanupExpiredAssertionReplays({ limit })
-        if (timedOut) break
-        metrics.batches += 1
-        metrics.rowsDeleted += deleted
-        if (deleted < limit) return { status: 'completed', ...metrics }
-      }
-      return { status: 'bounded', ...metrics }
-    } catch {
-      return { status: 'failed', ...metrics }
+  const deadline = Date.now() + REPLAY_CLEANUP_MAX_DURATION_MS
+  try {
+    while (
+      metrics.batches < REPLAY_CLEANUP_MAX_BATCHES
+      && metrics.rowsDeleted < REPLAY_CLEANUP_MAX_ROWS
+    ) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) return { status: 'timed_out', ...metrics }
+      const limit = Math.min(REPLAY_CLEANUP_BATCH_SIZE, REPLAY_CLEANUP_MAX_ROWS - metrics.rowsDeleted)
+      const deleted = await cleanupExpiredAssertionReplays({ limit, statementTimeoutMs: remainingMs })
+      metrics.batches += 1
+      metrics.rowsDeleted += deleted
+      if (deleted < limit) return { status: 'completed', ...metrics }
     }
-  })()
+    return { status: 'bounded', ...metrics }
+  } catch (error) {
+    return { status: isQueryTimeout(error) ? 'timed_out' : 'failed', ...metrics }
+  }
+}
 
-  const timeout = new Promise<AssertionReplayCleanupOutcome>((resolve) => {
-    timeoutHandle = setTimeout(() => {
-      timedOut = true
-      resolve({ status: 'timed_out', ...metrics })
-    }, REPLAY_CLEANUP_MAX_DURATION_MS)
-  })
-  const outcome = await Promise.race([work, timeout])
-  if (outcome.status !== 'timed_out' && timeoutHandle) clearTimeout(timeoutHandle)
-  return outcome
+function isQueryTimeout(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth += 1) {
+    if ((current as { code?: unknown }).code === '57014') return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
 }
