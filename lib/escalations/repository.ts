@@ -52,6 +52,7 @@ async function channelsForGroup(
       id: notificationChannels.id,
       type: notificationChannels.type,
       status: notificationChannels.status,
+      includeReporterContext: notificationChannels.includeReporterContext,
     })
     .from(notificationChannels)
     .innerJoin(supportGroups, eq(supportGroups.id, notificationChannels.groupId))
@@ -65,7 +66,7 @@ async function channelsForGroup(
     channelId: channel.id,
     channelType: channel.type,
     configSource: 'DATABASE',
-    includeReporterContext: false,
+    includeReporterContext: channel.includeReporterContext,
     status: channel.status,
     minimumPriority,
   }))

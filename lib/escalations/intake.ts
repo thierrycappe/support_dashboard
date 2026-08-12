@@ -8,8 +8,10 @@ import {
   feedbackTickets,
   ingestReceipts,
   routingIncidents,
+  sourceApps,
 } from '@/lib/db/schema'
-import type { DeliveryTarget, RoutingDecision } from '@/lib/delivery/types'
+import { renderDeliveryEvent } from '@/lib/delivery/render'
+import type { DeliveryEvent, DeliveryEventInput, DeliveryTarget, RoutingDecision } from '@/lib/delivery/types'
 import type { FeedbackPriority } from '@/lib/feedback/status'
 import {
   canonicalEscalationDigest,
@@ -17,6 +19,7 @@ import {
 } from '@/lib/escalations/contract'
 import { IntakeError } from '@/lib/escalations/errors'
 import { resolveTargetsFromDb } from '@/lib/escalations/repository'
+import { getTowerPublicUrl } from '@/lib/notifications/pushover'
 
 export interface AcceptEscalationInput {
   appId: string
@@ -35,6 +38,7 @@ export interface IntakeResult {
 
 export interface IntakeDependencies {
   db: Db
+  portalOrigin?: string
   resolveTargets(
     tx: DbTransaction,
     appId: string,
@@ -62,15 +66,17 @@ interface EscalationEventRecord {
 
 export async function acceptEscalation(
   input: AcceptEscalationInput,
-  deps: IntakeDependencies = {
+  deps?: IntakeDependencies,
+): Promise<IntakeResult> {
+  const dependencies = deps ?? {
     db: getDb(),
     resolveTargets: resolveTargetsFromDb,
-  },
-): Promise<IntakeResult> {
+  }
+  const portalOrigin = trustedPortalOrigin(dependencies.portalOrigin)
   const digest = canonicalEscalationDigest(input.command)
   const acceptedAt = input.receivedAt ?? new Date()
 
-  return deps.db.transaction(async (tx) => {
+  return dependencies.db.transaction(async (tx) => {
     const receipt = await claimReceipt(tx, input, digest, acceptedAt)
     if (receipt.kind === 'duplicate') return receipt.result
     if (receipt.kind === 'conflict') throw new IntakeError('IDEMPOTENCY_CONFLICT')
@@ -78,14 +84,34 @@ export async function acceptEscalation(
     await lockTicketIdentity(tx, input.appId, input.command.externalId)
     const ticket = await upsertEscalationTicket(tx, input, digest, acceptedAt)
     const routing = ticket.materialChange
-      ? await deps.resolveTargets(tx, input.appId, input.command.priority)
+      ? await dependencies.resolveTargets(tx, input.appId, input.command.priority)
       : { targets: [], incident: null }
+    const appName = await appNameFor(tx, input.appId)
+    const deliveryEventInput: DeliveryEventInput = {
+      ticketId: ticket.id,
+      appName,
+      kind: input.command.kind,
+      priority: input.command.priority,
+      title: input.command.title,
+      description: input.command.description,
+      reporter: input.command.reporter,
+      includeReporterContext: false,
+    }
+    const defaultDeliveryEvent = renderDeliveryEvent(deliveryEventInput, { portalOrigin })
     const event = ticket.materialChange
       ? await insertEscalationEvent(tx, ticket.id, input, digest, acceptedAt)
       : null
 
     if (event) {
-      await insertDeliveryOutbox(tx, event, routing.targets, acceptedAt)
+      await insertDeliveryOutbox(
+        tx,
+        event,
+        routing.targets,
+        defaultDeliveryEvent,
+        deliveryEventInput,
+        portalOrigin,
+        acceptedAt,
+      )
       await insertRoutingIncident(tx, event.id, routing, acceptedAt)
     }
 
@@ -271,6 +297,9 @@ async function insertDeliveryOutbox(
   tx: DbTransaction,
   event: EscalationEventRecord,
   targets: DeliveryTarget[],
+  defaultDeliveryEvent: DeliveryEvent,
+  deliveryEventInput: DeliveryEventInput,
+  portalOrigin: string,
   acceptedAt: Date,
 ): Promise<void> {
   if (targets.length === 0) return
@@ -284,13 +313,40 @@ async function insertDeliveryOutbox(
     channelId: target.channelId,
     channelType: target.channelType,
     configSource: target.configSource,
-    renderedPayload: event.payload,
+    renderedPayload: renderedPayload(target.configSource === 'DATABASE' && target.includeReporterContext
+      ? renderDeliveryEvent({ ...deliveryEventInput, includeReporterContext: true }, { portalOrigin })
+      : defaultDeliveryEvent),
     status: 'PENDING' as const,
     nextAttemptAt: acceptedAt,
     attemptCount: 0,
     createdAt: acceptedAt,
     updatedAt: acceptedAt,
   })))
+}
+
+function renderedPayload(event: DeliveryEvent): Record<string, unknown> {
+  return event.reporterContext
+    ? { ...event, reporterContext: { ...event.reporterContext } }
+    : { ...event }
+}
+
+async function appNameFor(tx: DbTransaction, appId: string): Promise<string> {
+  const appRows = await tx
+    .select({ name: sourceApps.name })
+    .from(sourceApps)
+    .where(eq(sourceApps.id, appId))
+    .limit(1)
+  const app = appRows[0]
+  if (!app) throw new Error(`Source app not found: ${appId}`)
+  return app.name
+}
+
+function trustedPortalOrigin(configuredOrigin?: string): string {
+  const portalOrigin = configuredOrigin ?? getTowerPublicUrl()
+  if (!portalOrigin) {
+    throw new Error('SUPPORT_TOWER_PUBLIC_URL, NEXT_PUBLIC_APP_URL, or VERCEL_URL must be configured')
+  }
+  return portalOrigin
 }
 
 async function insertRoutingIncident(

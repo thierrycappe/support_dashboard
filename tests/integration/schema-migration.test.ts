@@ -24,13 +24,16 @@ const fixture = {
 }
 const rehearsalSchema = `schema_migration_${randomUUID().replaceAll('-', '')}`
 let rehearsalPool: Pool
-let supportMigrationSql: string
+let supportMigrations: Array<{ name: string; sqlText: string }>
 
 beforeAll(async () => {
-  supportMigrationSql = await readFile(
-    new URL('../../drizzle/0001_support_portal_core.sql', import.meta.url),
-    'utf8',
-  )
+  supportMigrations = await Promise.all([
+    '0001_support_portal_core',
+    '0002_notification_channel_reporter_context',
+  ].map(async (name) => ({
+    name,
+    sqlText: await readFile(new URL(`../../drizzle/${name}.sql`, import.meta.url), 'utf8'),
+  })))
   await fixture.pool.query(`drop table if exists ${fixtureTable}`)
   await fixture.pool.query(`create table if not exists support_schema_migrations (
     name text primary key, checksum text not null,
@@ -66,9 +69,8 @@ it('rejects changed SQL under an applied migration name', async () => {
 })
 
 it('upgrades the exact current schema without changing legacy rows or named objects', async () => {
-  const migration = migrationFixture()
-  expect(await applyMigration(migration)).toBe('applied')
-  expect(await applyMigration(migration)).toBe('already-applied')
+  expect(await applySupportMigrations()).toEqual(['applied', 'applied'])
+  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied'])
 
   const legacyRows = await rehearsalPool.query<{ table_name: string; count: number }>(`
     select 'source_apps' as table_name, count(*)::int as count from source_apps union all
@@ -98,11 +100,13 @@ it('upgrades the exact current schema without changing legacy rows or named obje
   const enums = await rehearsalPool.query<{ type_name: string; enumlabel: string }>(`
     select typ.typname as type_name, enum.enumlabel
       from pg_type typ join pg_enum enum on enum.enumtypid = typ.oid
+      join pg_namespace namespace on namespace.oid = typ.typnamespace
      where typ.typname in (
        'AppStatus', 'FeedbackKind', 'FeedbackPriority', 'FeedbackStatus', 'NotificationKind',
        'AuthUserRole', 'AuthUserStatus', 'EnrollmentStatus', 'CredentialMode',
        'CredentialStatus', 'ChannelType', 'ChannelStatus', 'DeliveryStatus'
-     ) order by typ.typname, enum.enumsortorder
+     ) and namespace.nspname = current_schema()
+     order by typ.typname, enum.enumsortorder
   `)
   expect(enums.rows).toEqual([
     ['AppStatus', 'ACTIVE'], ['AppStatus', 'PAUSED'],
@@ -135,7 +139,7 @@ it('upgrades the exact current schema without changing legacy rows or named obje
 })
 
 it('keeps Drizzle and migration column contracts aligned, including UTC timestamps', async () => {
-  await applyMigration(migrationFixture())
+  await applySupportMigrations()
 
   const timestamps: Array<{ table: string; column: TimestampColumn }> = [
     ['support_groups', schema.supportGroups.createdAt], ['support_groups', schema.supportGroups.updatedAt],
@@ -201,15 +205,18 @@ it('keeps Drizzle and migration column contracts aligned, including UTC timestam
   expect(schema.feedbackTickets.triage.getSQLType()).toBe('jsonb')
 
   const constraints = await rehearsalPool.query<{ conname: string; definition: string }>(`
-    select conname, pg_get_constraintdef(oid) as definition from pg_constraint
-     where conname in (
+    select con.conname, pg_get_constraintdef(con.oid) as definition from pg_constraint con
+      join pg_class table_class on table_class.oid = con.conrelid
+      join pg_namespace namespace on namespace.oid = table_class.relnamespace
+     where con.conname in (
        'feedback_tickets_source_app_id_source_apps_id_fk',
        'feedback_replies_feedback_id_feedback_tickets_id_fk',
        'notifications_feedback_id_feedback_tickets_id_fk',
        'password_reset_tokens_user_id_support_users_id_fk',
        'source_apps_technical_group_id_support_groups_id_fk',
        'delivery_outbox_target_source_check'
-     ) order by conname
+     ) and namespace.nspname = current_schema()
+     order by con.conname
   `)
   expect(constraints.rows).toEqual([
     { conname: 'delivery_outbox_target_source_check', definition: "CHECK ((((config_source = 'DATABASE'::text) AND (channel_id IS NOT NULL) AND (target_key = ('channel:'::text || channel_id))) OR ((config_source = 'LEGACY_ENV'::text) AND (channel_id IS NULL) AND (target_key = 'legacy:central-pushover'::text) AND (channel_type = 'PUSHOVER'::\"ChannelType\"))))" },
@@ -222,7 +229,7 @@ it('keeps Drizzle and migration column contracts aligned, including UTC timestam
 })
 
 it('exhaustively matches the declared schema contract to PostgreSQL catalogs', async () => {
-  await applyMigration(migrationFixture())
+  await applySupportMigrations()
   const contracts = task2TableContracts()
   const tableNames = contracts.map((contract) => contract.table)
   const expectedColumns = contracts.flatMap(({ columns }) => columns)
@@ -300,7 +307,7 @@ it('exhaustively matches the declared schema contract to PostgreSQL catalogs', a
 })
 
 it('rejects a database-backed outbox target without its database channel', async () => {
-  await applyMigration(migrationFixture())
+  await applySupportMigrations()
   await rehearsalPool.query(`insert into escalation_events (id, ticket_id, generation, event_key, payload, created_at)
     values ('legacy-event', 'legacy-ticket', 1, 'legacy-event', '{}'::jsonb, now()) on conflict do nothing`)
   await expect(rehearsalPool.query(`insert into delivery_outbox (
@@ -310,8 +317,12 @@ it('rejects a database-backed outbox target without its database channel', async
     'EMAIL', 'DATABASE', '{}'::jsonb, 'PENDING', now(), now(), now())`)).rejects.toThrow('delivery_outbox_target_source_check')
 })
 
-function migrationFixture() {
-  return { name: '0001_support_portal_core', sqlText: supportMigrationSql, pool: rehearsalPool }
+async function applySupportMigrations(): Promise<Array<'applied' | 'already-applied'>> {
+  const results: Array<'applied' | 'already-applied'> = []
+  for (const migration of supportMigrations) {
+    results.push(await applyMigration({ ...migration, pool: rehearsalPool }))
+  }
+  return results
 }
 
 function getColumnConfig(column: unknown): { default: unknown; notNull: boolean } {

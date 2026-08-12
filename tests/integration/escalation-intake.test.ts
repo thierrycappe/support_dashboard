@@ -19,6 +19,7 @@ import {
 import { requireTestDatabaseUrl } from './helpers/database'
 
 process.env.DATABASE_URL = requireTestDatabaseUrl()
+process.env.SUPPORT_TOWER_PUBLIC_URL = 'https://support.example.test'
 
 const now = new Date('2026-08-12T12:00:00.000Z')
 const appId = 'task5-app'
@@ -148,6 +149,63 @@ describe('acceptEscalation', () => {
       .from(escalationEvents)
     expect(event?.payload).not.toHaveProperty('description')
     expect(event?.payload).not.toHaveProperty('reporter')
+    expect(await renderedOutboxPayloads()).toEqual([{
+      targetKey: `channel:${appChannelId}`,
+      renderedPayload: {
+        ticketId: result.ticketId,
+        appName: 'Task 5 App',
+        kind: 'BUG',
+        priority: 'HIGH',
+        title: 'Cannot publish a schedule',
+        portalUrl: `https://support.example.test/feedback/${result.ticketId}`,
+      },
+    }])
+  })
+
+  it('snapshots reporter context only for opted-in database channels', async () => {
+    await seedRouting()
+    await getDb().execute(sql`
+      update notification_channels
+         set include_reporter_context = true
+       where id = ${centralChannelId}
+    `)
+
+    const result = await acceptEscalation({
+      ...input,
+      command: { ...input.command, priority: 'URGENT' },
+    })
+
+    expect(await renderedOutboxPayloads()).toEqual([
+      {
+        targetKey: `channel:${appChannelId}`,
+        renderedPayload: {
+          ticketId: result.ticketId,
+          appName: 'Task 5 App',
+          kind: 'BUG',
+          priority: 'URGENT',
+          title: 'Cannot publish a schedule',
+          portalUrl: `https://support.example.test/feedback/${result.ticketId}`,
+        },
+      },
+      {
+        targetKey: `channel:${centralChannelId}`,
+        renderedPayload: {
+          ticketId: result.ticketId,
+          appName: 'Task 5 App',
+          kind: 'BUG',
+          priority: 'URGENT',
+          title: 'Cannot publish a schedule',
+          portalUrl: `https://support.example.test/feedback/${result.ticketId}`,
+          reporterContext: {
+            name: 'Elodie Martin',
+            email: 'elodie@example.test',
+          },
+        },
+      },
+    ])
+    expect(JSON.stringify(await renderedOutboxPayloads())).not.toContain(command.description)
+    expect(JSON.stringify(await renderedOutboxPayloads())).not.toContain(command.browserInfo)
+    expect(JSON.stringify(await renderedOutboxPayloads())).not.toContain('integration-test')
   })
 
   it('persists the legacy environment target without inventing a channel ID', async () => {
@@ -160,7 +218,7 @@ describe('acceptEscalation', () => {
           channelId: null,
           channelType: 'PUSHOVER',
           configSource: 'LEGACY_ENV',
-          includeReporterContext: false,
+          includeReporterContext: true,
         }],
         incident: null,
       }),
@@ -173,6 +231,7 @@ describe('acceptEscalation', () => {
         channelId: deliveryOutbox.channelId,
         channelType: deliveryOutbox.channelType,
         configSource: deliveryOutbox.configSource,
+        renderedPayload: deliveryOutbox.renderedPayload,
       })
       .from(deliveryOutbox)
 
@@ -182,6 +241,14 @@ describe('acceptEscalation', () => {
       channelId: null,
       channelType: 'PUSHOVER',
       configSource: 'LEGACY_ENV',
+      renderedPayload: {
+        ticketId: result.ticketId,
+        appName: 'Task 5 App',
+        kind: 'BUG',
+        priority: 'HIGH',
+        title: 'Cannot publish a schedule',
+        portalUrl: `https://support.example.test/feedback/${result.ticketId}`,
+      },
     }])
   })
 
@@ -393,4 +460,18 @@ async function routingReasons(): Promise<string[]> {
     .from(routingIncidents)
     .orderBy(routingIncidents.reason)
   return rows.map((row) => row.reason)
+}
+
+async function renderedOutboxPayloads(): Promise<Array<{
+  targetKey: string
+  renderedPayload: Record<string, unknown>
+}>> {
+  const rows = await getDb()
+    .select({
+      targetKey: deliveryOutbox.targetKey,
+      renderedPayload: deliveryOutbox.renderedPayload,
+    })
+    .from(deliveryOutbox)
+    .orderBy(deliveryOutbox.targetKey)
+  return rows
 }
