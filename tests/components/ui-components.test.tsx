@@ -1,5 +1,6 @@
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
+import Link from 'next/link'
 import Badge from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
 import DataTable from '@/components/ui/DataTable'
@@ -35,7 +36,7 @@ describe('product UI primitives', () => {
       <EmptyState
         title="No deliveries yet"
         description="Deliveries appear after an escalation matches an active notification policy."
-        action={<a href="/apps">Review applications</a>}
+        action={<Link href="/apps">Review applications</Link>}
       />,
     )
     expect(screen.getByRole('heading', { name: 'No deliveries yet' })).toBeVisible()
