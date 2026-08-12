@@ -1,97 +1,33 @@
-import { auth } from '@/auth'
+import Link from 'next/link'
+import type { Route } from 'next'
 import { redirect } from 'next/navigation'
+import { auth } from '@/auth'
 import AppShell from '@/components/AppShell'
-import { getDashboardData } from '@/lib/feedback/dashboard'
+import Badge from '@/components/ui/Badge'
+import DataTable from '@/components/ui/DataTable'
+import EmptyState from '@/components/ui/EmptyState'
+import InlineNotice from '@/components/ui/InlineNotice'
+import { getApplications } from '@/lib/apps/queries'
+import { hasDatabaseUrl } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
+const date = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' })
 
 export default async function AppsPage() {
   const session = await auth()
   if (!session?.user) redirect('/login')
-
-  const data = await getDashboardData()
-
-  return (
-    <AppShell>
-      <div className="topbar">
-        <div>
-          <p className="eyebrow">Connected applications</p>
-          <h1>Source apps</h1>
-          <p className="subtle">
-            Apps appear here automatically when they send their first feedback
-            payload to the ingest endpoint.
-          </p>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-body">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Slug</th>
-                <th>Environment</th>
-                <th>Status</th>
-                <th>Open tickets</th>
-                <th>Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.apps.map((app) => (
-                <tr key={app.id}>
-                  <td>{app.name}</td>
-                  <td>{app.slug}</td>
-                  <td>{app.environment}</td>
-                  <td>{app.status}</td>
-                  <td>{app.openCount}</td>
-                  <td>
-                    {app.lastSeenAt
-                      ? new Intl.DateTimeFormat('en', {
-                          dateStyle: 'medium',
-                          timeStyle: 'short',
-                        }).format(app.lastSeenAt)
-                      : 'Never'}
-                  </td>
-                </tr>
-              ))}
-              {data.apps.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="subtle">
-                    No source app has checked in yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="panel" style={{ marginTop: 18 }}>
-        <div className="panel-body">
-          <h2>Connector contract</h2>
-          <p className="subtle">
-            External apps should POST to `/api/feedback/ingest` with
-            `Authorization: Bearer &lt;app-specific token&gt;`. Tokens are
-            matched to `app.slug` through a per-app env var
-            (`SUPPORT_TOWER_INGEST_TOKEN_&lt;SLUG&gt;`), so each source app can
-            be rotated independently. The payload includes
-            `app` identity and one `ticket`. `ticket.url` should be the deep
-            link to the original app feedback dashboard; this tower mirrors
-            status and links out, it does not replace the source app workflow.
-          </p>
-          <p className="subtle">
-            For status freshness, source apps should also expose
-            `GET /api/support-tower/export` (`Authorization: Bearer
-            &lt;SUPPORT_TOWER_EXPORT_TOKEN&gt;`, accepting optional
-            `?externalId=&lt;id&gt;`) returning `&#123; tickets: [...] &#125;`
-            in the same ingest payload shape. The tower pulls this every 30
-            minutes (full sync) to refresh ticket state and clear the
-            &ldquo;Stale sync&rdquo; indicator, even when nothing changed in the
-            source app.
-          </p>
-        </div>
-      </div>
-    </AppShell>
-  )
+  const configured = hasDatabaseUrl()
+  const apps = configured ? await getApplications() : []
+  return <AppShell><header className="topbar"><div><p className="eyebrow">Connector administration</p><h1>Applications</h1><p className="subtle">Ownership, enrollment, and notification readiness for connected applications.</p></div>{session.user.role === 'ADMIN' ? <Link className="ui-button ui-button-primary" href={'/apps/new' as Route}>Enroll application</Link> : null}</header>
+    {!configured ? <InlineNotice tone="warning" title="Data is temporarily unavailable">Configure the application data connection, then reload this page.</InlineNotice> : null}
+    <DataTable caption="Applications" rows={apps} getRowKey={(app) => app.id} emptyState={<EmptyState title="No applications yet" description="Applications appear after an administrator creates an enrollment invitation." action={session.user.role === 'ADMIN' ? <Link href={'/apps/new' as Route}>Enroll application</Link> : undefined} />} columns={[
+      { key: 'name', header: 'Application', render: (app) => <div><Link href={`/apps/${app.id}` as Route}>{app.name}</Link><div className="subtle">{app.slug}</div></div> },
+      { key: 'groupName', header: 'Technical group' }, { key: 'environment', header: 'Environment' },
+      { key: 'enrollmentStatus', header: 'Enrollment', render: (app) => <Badge tone={app.enrollmentStatus === 'ACTIVE' ? 'success' : 'neutral'}>{label(app.enrollmentStatus)}</Badge> },
+      { key: 'openCount', header: 'Open escalations' },
+      { key: 'lastAuthenticatedAt', header: 'Last authenticated', render: (app) => app.lastAuthenticatedAt ? date.format(app.lastAuthenticatedAt) : 'Never' },
+    ]} />
+  </AppShell>
 }
+
+function label(value: string): string { return value.charAt(0) + value.slice(1).toLocaleLowerCase('en') }
