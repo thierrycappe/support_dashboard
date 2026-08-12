@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { sql } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
@@ -14,10 +15,16 @@ const keyring = parseChannelKeyring(JSON.stringify({
   active: 'v1',
   keys: { v1: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=' },
 }))
-const mutation = { actorId: 'admin-1', correlationId: 'routing-test', reason: 'routing test' }
+let testCorrelationId = ''
+const mutation = {
+  actorId: 'admin-1',
+  get correlationId() { return testCorrelationId },
+  reason: 'routing test',
+}
 
 beforeEach(async () => {
-  await getDb().execute(sql`truncate table audit_events, source_apps, support_groups, support_users cascade`)
+  testCorrelationId = `routing-test-${randomUUID()}`
+  await getDb().execute(sql`truncate table source_apps, support_groups, support_users cascade`)
   await getDb().execute(sql`
     insert into support_users (id, email, name, role, status, password_hash, created_at, updated_at)
     values ('admin-1', 'admin@example.test', 'Admin', 'ADMIN', 'ACTIVE', 'hash', now(), now()),
@@ -124,7 +131,7 @@ describe('routing repositories', () => {
 
   it('appends immutable, non-secret audit records', async () => {
     const audit = await appendAuditEvent({ action: 'ROUTING_READ', subjectType: 'support_group', subjectId: 'subject-1', ...mutation })
-    expect(audit).toMatchObject({ action: 'ROUTING_READ', actorId: 'admin-1', requestCorrelationId: 'routing-test' })
+    expect(audit).toMatchObject({ action: 'ROUTING_READ', actorId: 'admin-1', requestCorrelationId: testCorrelationId })
     expect(await scalar(sql`select count(*)::int as count from audit_events where id = ${audit.id}`)).toBe(1)
     await expect(appendAuditEvent({
       action: 'BAD_REASON', subjectType: 'channel', subjectId: 'x', metadata: { reason: 'override' }, ...mutation,
@@ -185,11 +192,11 @@ async function scalar(query: ReturnType<typeof sql>): Promise<number> {
 }
 
 async function auditActions(): Promise<string[]> {
-  const rows = await getDb().execute<{ action: string }>(sql`select action from audit_events order by created_at, id`)
+  const rows = await getDb().execute<{ action: string }>(sql`select action from audit_events where request_correlation_id = ${testCorrelationId} order by created_at, id`)
   return rows.rows.map((row) => row.action)
 }
 
 async function auditRows(): Promise<unknown[]> {
-  const rows = await getDb().execute(sql`select actor_id, action, subject_type, subject_id, metadata, request_correlation_id from audit_events order by created_at, id`)
+  const rows = await getDb().execute(sql`select actor_id, action, subject_type, subject_id, metadata, request_correlation_id from audit_events where request_correlation_id = ${testCorrelationId} order by created_at, id`)
   return rows.rows
 }

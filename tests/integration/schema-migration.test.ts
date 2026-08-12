@@ -324,7 +324,19 @@ it('rejects audit event updates and deletes at the database boundary', async () 
     values ('append-only-audit', 'USER', 'TEST', 'audit_event', '{}'::jsonb, now())`)
   await expect(rehearsalPool.query(`update audit_events set action = 'MUTATED' where id = 'append-only-audit'`)).rejects.toThrow('audit_events is append-only')
   await expect(rehearsalPool.query(`delete from audit_events where id = 'append-only-audit'`)).rejects.toThrow('audit_events is append-only')
+  await expect(rehearsalPool.query('truncate audit_events')).rejects.toThrow('audit_events is append-only')
   expect((await rehearsalPool.query<{ count: string }>(`select count(*)::text as count from audit_events where id = 'append-only-audit'`)).rows).toEqual([{ count: '1' }])
+  const triggers = await rehearsalPool.query<{ name: string }>(`
+    select distinct trigger.tgname as name
+      from pg_trigger trigger
+      join pg_class table_class on table_class.oid = trigger.tgrelid
+     where table_class.relname = 'audit_events' and not trigger.tgisinternal
+     order by trigger.tgname
+  `)
+  expect(triggers.rows).toEqual([
+    { name: 'audit_events_append_only' },
+    { name: 'audit_events_reject_truncate' },
+  ])
 })
 
 async function applySupportMigrations(): Promise<Array<'applied' | 'already-applied'>> {

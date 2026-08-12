@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { eq, sql, type SQL } from 'drizzle-orm'
 import { closeDbPool, getDb } from '@/lib/db'
@@ -54,16 +55,17 @@ const command = {
   metadata: { source: 'integration-test' },
 }
 
-const input: AcceptEscalationInput = {
-  appId,
-  credentialId: null,
-  idempotencyKey: 'request-1',
-  command,
-  receivedAt: now,
-}
+let input: AcceptEscalationInput
 
 beforeEach(async () => {
-  await getDb().execute(sql`truncate table audit_events, source_apps, support_groups cascade`)
+  input = {
+    appId,
+    credentialId: null,
+    idempotencyKey: `request-${randomUUID()}`,
+    command,
+    receivedAt: now,
+  }
+  await getDb().execute(sql`truncate table source_apps, support_groups cascade`)
 })
 
 afterAll(async () => {
@@ -437,7 +439,7 @@ async function countOutboxRowsForApp(sourceAppId: string): Promise<number> {
 }
 
 async function countAuditEvents(): Promise<number> {
-  return scalarCount(sql`select count(*)::int as count from audit_events`)
+  return scalarCount(sql`select count(*)::int as count from audit_events where request_correlation_id = ${input.idempotencyKey}`)
 }
 
 async function scalarCount(query: SQL): Promise<number> {
