@@ -6,6 +6,7 @@ const migrations = await Promise.all([
   '0001_support_portal_core',
   '0002_notification_channel_reporter_context',
   '0003_audit_events_append_only',
+  '0004_audit_events_reject_truncate',
 ].map(async (name) => ({
   name,
   sqlText: await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), 'utf8'),

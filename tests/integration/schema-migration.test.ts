@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { Pool } from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
@@ -23,14 +23,34 @@ const fixture = {
   pool: getDbPool(),
 }
 const rehearsalSchema = `schema_migration_${randomUUID().replaceAll('-', '')}`
+const ledgerUpgradeSchema = `schema_migration_upgrade_${randomUUID().replaceAll('-', '')}`
 let rehearsalPool: Pool
+let ledgerUpgradePool: Pool
 let supportMigrations: Array<{ name: string; sqlText: string }>
+
+const originalAuditAppendOnlyMigrationSql = `-- Audit evidence must be append-only even when repository code is bypassed.
+CREATE OR REPLACE FUNCTION support_tower_reject_audit_event_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_events is append-only';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS audit_events_append_only ON audit_events;
+CREATE TRIGGER audit_events_append_only
+  BEFORE UPDATE OR DELETE ON audit_events
+  FOR EACH ROW
+  EXECUTE FUNCTION support_tower_reject_audit_event_mutation();
+`
 
 beforeAll(async () => {
   supportMigrations = await Promise.all([
     '0001_support_portal_core',
     '0002_notification_channel_reporter_context',
     '0003_audit_events_append_only',
+    '0004_audit_events_reject_truncate',
   ].map(async (name) => ({
     name,
     sqlText: await readFile(new URL(`../../drizzle/${name}.sql`, import.meta.url), 'utf8'),
@@ -46,14 +66,22 @@ beforeAll(async () => {
     connectionString: requireTestDatabaseUrl(),
     options: `-c search_path=${rehearsalSchema}`,
   })
+  await fixture.pool.query(`create schema ${ledgerUpgradeSchema}`)
+  ledgerUpgradePool = new Pool({
+    connectionString: requireTestDatabaseUrl(),
+    options: `-c search_path=${ledgerUpgradeSchema}`,
+  })
   await createExactCurrentSchema(rehearsalPool)
+  await createExactCurrentSchema(ledgerUpgradePool)
 })
 
 afterAll(async () => {
   await rehearsalPool?.end()
+  await ledgerUpgradePool?.end()
   await fixture.pool.query(`drop table if exists ${fixtureTable}`)
   await fixture.pool.query('delete from support_schema_migrations where name = $1', [fixture.name])
   await fixture.pool.query(`drop schema if exists ${rehearsalSchema} cascade`)
+  await fixture.pool.query(`drop schema if exists ${ledgerUpgradeSchema} cascade`)
   await closeDbPool()
 })
 
@@ -70,8 +98,8 @@ it('rejects changed SQL under an applied migration name', async () => {
 })
 
 it('upgrades the exact current schema without changing legacy rows or named objects', async () => {
-  expect(await applySupportMigrations()).toEqual(['applied', 'applied', 'applied'])
-  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied', 'already-applied'])
+  expect(await applySupportMigrations()).toEqual(['applied', 'applied', 'applied', 'applied'])
+  expect(await applySupportMigrations()).toEqual(['already-applied', 'already-applied', 'already-applied', 'already-applied'])
 
   const legacyRows = await rehearsalPool.query<{ table_name: string; count: number }>(`
     select 'source_apps' as table_name, count(*)::int as count from source_apps union all
@@ -137,6 +165,30 @@ it('upgrades the exact current schema without changing legacy rows or named obje
     'delivery_outbox_event_target_generation_idx', 'escalation_events_ticket_generation_idx',
     'service_assertion_replays_expires_idx', 'support_groups_one_central_fallback_idx',
   ])
+})
+
+it('upgrades an original 0003 migration ledger with the additive truncate protection', async () => {
+  const originalChecksum = createHash('sha256').update(originalAuditAppendOnlyMigrationSql).digest('hex')
+  const originalMigration = supportMigrations.find(({ name }) => name === '0003_audit_events_append_only')
+  const truncateMigration = supportMigrations.find(({ name }) => name === '0004_audit_events_reject_truncate')
+
+  expect(originalMigration?.sqlText).toBe(originalAuditAppendOnlyMigrationSql)
+  expect(truncateMigration).toBeDefined()
+
+  for (const migration of supportMigrations.filter(({ name }) => name !== '0004_audit_events_reject_truncate')) {
+    const sqlText = migration.name === '0003_audit_events_append_only'
+      ? originalAuditAppendOnlyMigrationSql
+      : migration.sqlText
+    expect(await applyMigration({ ...migration, sqlText, pool: ledgerUpgradePool })).toBe('applied')
+  }
+
+  expect((await ledgerUpgradePool.query<{ checksum: string }>(
+    `select checksum from support_schema_migrations where name = '0003_audit_events_append_only'`,
+  )).rows).toEqual([{ checksum: originalChecksum }])
+  expect(await applyMigration({ ...originalMigration!, pool: ledgerUpgradePool })).toBe('already-applied')
+  expect(await applyMigration({ ...truncateMigration!, pool: ledgerUpgradePool })).toBe('applied')
+  expect(await applyMigration({ ...truncateMigration!, pool: ledgerUpgradePool })).toBe('already-applied')
+  await expect(ledgerUpgradePool.query('truncate audit_events')).rejects.toThrow('audit_events is append-only')
 })
 
 it('keeps Drizzle and migration column contracts aligned, including UTC timestamps', async () => {
@@ -330,7 +382,10 @@ it('rejects audit event updates and deletes at the database boundary', async () 
     select distinct trigger.tgname as name
       from pg_trigger trigger
       join pg_class table_class on table_class.oid = trigger.tgrelid
-     where table_class.relname = 'audit_events' and not trigger.tgisinternal
+      join pg_namespace namespace on namespace.oid = table_class.relnamespace
+     where table_class.relname = 'audit_events'
+       and namespace.nspname = current_schema()
+       and not trigger.tgisinternal
      order by trigger.tgname
   `)
   expect(triggers.rows).toEqual([
