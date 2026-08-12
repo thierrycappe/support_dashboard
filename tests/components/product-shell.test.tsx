@@ -10,9 +10,9 @@ import AppShell from '@/components/AppShell'
 import NavLinks from '@/components/NavLinks'
 import ThemeToggle from '@/components/ThemeToggle'
 
-let triggerResizeObserver: () => void
+let triggerResizeObserver: (element: Element) => void
 const disconnectResizeObserver = vi.fn()
-const observeResizeObserver = vi.fn()
+const observedResizeElements = new Set<Element>()
 
 describe('product shell', () => {
   beforeEach(() => {
@@ -21,18 +21,24 @@ describe('product shell', () => {
     Element.prototype.scrollIntoView = vi.fn()
     HTMLElement.prototype.scrollBy = vi.fn()
     disconnectResizeObserver.mockClear()
-    observeResizeObserver.mockClear()
+    observedResizeElements.clear()
     vi.stubGlobal('ResizeObserver', class ResizeObserverMock {
       private readonly callback: ResizeObserverCallback
 
       constructor(callback: ResizeObserverCallback) {
         this.callback = callback
-        triggerResizeObserver = () => this.callback([], this as unknown as ResizeObserver)
+        triggerResizeObserver = (element) => {
+          if (!observedResizeElements.has(element)) return
+          this.callback([{ target: element } as ResizeObserverEntry], this as unknown as ResizeObserver)
+        }
       }
 
-      observe(element: Element) { observeResizeObserver(element) }
-      unobserve() {}
-      disconnect() { disconnectResizeObserver() }
+      observe(element: Element) { observedResizeElements.add(element) }
+      unobserve(element: Element) { observedResizeElements.delete(element) }
+      disconnect() {
+        observedResizeElements.clear()
+        disconnectResizeObserver()
+      }
     })
   })
 
@@ -64,8 +70,9 @@ describe('product shell', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
     render(<NavLinks pathname="/users" isAdmin />)
     const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
+    setElementClientWidth(navigation.parentElement as HTMLElement, 300)
     setNavigationMetrics(navigation, { clientWidth: 300, scrollWidth: 700, scrollLeft: 400 })
-    act(() => triggerResizeObserver())
+    act(() => triggerResizeObserver(navigation))
 
     expect(screen.getByRole('link', { name: 'Access' })).toBeVisible()
     expect(screen.getByRole('link', { name: 'Access' })).toHaveAttribute('aria-current', 'page')
@@ -87,6 +94,7 @@ describe('product shell', () => {
     const removeWindowListener = vi.spyOn(window, 'removeEventListener')
     const { unmount } = render(<NavLinks pathname="/" isAdmin />)
     const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
+    setElementClientWidth(navigation.parentElement as HTMLElement, 500)
     setNavigationMetrics(navigation, { clientWidth: 500, scrollWidth: 500, scrollLeft: 0 })
 
     act(() => window.dispatchEvent(new Event('resize')))
@@ -94,7 +102,6 @@ describe('product shell', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Scroll navigation left' })).not.toBeInTheDocument())
     expect(screen.queryByRole('button', { name: 'Scroll navigation right' })).not.toBeInTheDocument()
     expect(navigation.parentElement).not.toHaveAttribute('data-overflow')
-    expect(observeResizeObserver).toHaveBeenCalledWith(navigation)
     unmount()
     expect(disconnectResizeObserver).toHaveBeenCalledOnce()
     expect(removeWindowListener).toHaveBeenCalledWith('resize', expect.any(Function))
@@ -103,9 +110,11 @@ describe('product shell', () => {
   it('tracks native disabled scroll boundaries and updates after scroll and resize', async () => {
     render(<NavLinks pathname="/deliveries" isAdmin />)
     const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = navigation.parentElement as HTMLElement
+    setElementClientWidth(rail, 500)
     setNavigationMetrics(navigation, { clientWidth: 300, scrollWidth: 700, scrollLeft: 0 })
 
-    act(() => triggerResizeObserver())
+    act(() => triggerResizeObserver(navigation))
 
     const previous = await screen.findByRole('button', { name: 'Scroll navigation left' })
     const next = screen.getByRole('button', { name: 'Scroll navigation right' })
@@ -125,10 +134,33 @@ describe('product shell', () => {
     await waitFor(() => expect(next).toBeDisabled())
     expect(previous).toBeEnabled()
 
+    setElementClientWidth(rail, 700)
     setNavigationMetrics(navigation, { clientWidth: 700, scrollWidth: 700, scrollLeft: 0 })
     act(() => window.dispatchEvent(new Event('resize')))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Scroll navigation right' })).not.toBeInTheDocument())
     expect(navigation.parentElement).not.toHaveAttribute('data-overflow')
+  })
+
+  it('drops self-sustaining controls when content fits the full rail and restores them after growth', async () => {
+    render(<NavLinks pathname="/deliveries" isAdmin />)
+    const navigation = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = navigation.parentElement as HTMLElement
+
+    setElementClientWidth(rail, 500)
+    setNavigationMetrics(navigation, { clientWidth: 404, scrollWidth: 700, scrollLeft: 0 })
+    act(() => triggerResizeObserver(navigation))
+    expect(await screen.findByRole('button', { name: 'Scroll navigation right' })).toBeEnabled()
+
+    setElementClientWidth(rail, 650)
+    setNavigationMetrics(navigation, { clientWidth: 554, scrollWidth: 620, scrollLeft: 50 })
+    act(() => triggerResizeObserver(navigation))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Scroll navigation right' })).not.toBeInTheDocument())
+    expect(navigation).toHaveProperty('scrollLeft', 0)
+
+    setNavigationMetrics(navigation, { clientWidth: 650, scrollWidth: 720, scrollLeft: 0 })
+    act(() => triggerResizeObserver(rail))
+    expect(await screen.findByRole('button', { name: 'Scroll navigation right' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Scroll navigation left' })).toBeDisabled()
   })
 
   it('renders the authenticated shell as server content with a skip link and main landmark', async () => {
@@ -162,4 +194,8 @@ function setNavigationMetrics(
     scrollWidth: { configurable: true, value: metrics.scrollWidth },
     scrollLeft: { configurable: true, writable: true, value: metrics.scrollLeft },
   })
+}
+
+function setElementClientWidth(element: HTMLElement, clientWidth: number) {
+  Object.defineProperty(element, 'clientWidth', { configurable: true, value: clientWidth })
 }

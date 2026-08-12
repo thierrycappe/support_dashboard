@@ -22,6 +22,7 @@ export default function NavLinks({
 }) {
   const currentPathname = usePathname()
   const pathname = pathnameOverride ?? currentPathname
+  const railRef = useRef<HTMLDivElement>(null)
   const navigationRef = useRef<HTMLElement>(null)
   const activeLinkRef = useRef<HTMLAnchorElement>(null)
   const [scrollState, setScrollState] = useState({
@@ -31,10 +32,12 @@ export default function NavLinks({
   })
 
   const updateScrollState = useCallback(() => {
+    const rail = railRef.current
     const navigation = navigationRef.current
-    if (!navigation) return
+    if (!rail || !navigation) return
+    const hasOverflow = navigation.scrollWidth - rail.clientWidth > 1
+    if (!hasOverflow && navigation.scrollLeft !== 0) navigation.scrollLeft = 0
     const maximumScrollLeft = Math.max(0, navigation.scrollWidth - navigation.clientWidth)
-    const hasOverflow = maximumScrollLeft > 1
     const nextState = {
       hasOverflow,
       canScrollBack: hasOverflow && navigation.scrollLeft > 1,
@@ -50,14 +53,16 @@ export default function NavLinks({
   }, [])
 
   useEffect(() => {
+    const rail = railRef.current
     const navigation = navigationRef.current
-    if (!navigation) return
+    if (!rail || !navigation) return
 
     navigation.addEventListener('scroll', updateScrollState, { passive: true })
     window.addEventListener('resize', updateScrollState)
     const resizeObserver = typeof ResizeObserver === 'undefined'
       ? null
       : new ResizeObserver(updateScrollState)
+    resizeObserver?.observe(rail)
     resizeObserver?.observe(navigation)
     updateScrollState()
 
@@ -86,7 +91,7 @@ export default function NavLinks({
   }
 
   return (
-    <div className="nav-rail" data-overflow={scrollState.hasOverflow ? 'true' : undefined}>
+    <div ref={railRef} className="nav-rail" data-overflow={scrollState.hasOverflow ? 'true' : undefined}>
       {scrollState.hasOverflow ? (
         <button
           className="nav-scroll-control"
