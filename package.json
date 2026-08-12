@@ -18,6 +18,7 @@
     "auth:seed-admin": "tsx scripts/seed-admin-user.ts",
     "auth:send-password-reset": "tsx scripts/send-password-reset.ts",
     "auth:generate-service-signing-key": "tsx scripts/generate-service-signing-key.ts",
+    "load:test:support": "tsx scripts/load-escalations.ts",
     "scenario:check": "tsx scripts/check-scenario-drift.ts"
   },
   "dependencies": {
