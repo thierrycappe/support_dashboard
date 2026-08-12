@@ -34,7 +34,7 @@ export async function backfillSupportRouting({
   db?: Db
   env?: Env
   actorId: string
-  onRoutingLock?: () => Promise<void>
+  onRoutingLock?: (tx: DbTransaction) => Promise<void>
 }): Promise<BackfillSummary> {
   const pushover = getPushoverConfig(env)
   const keyring = pushover ? loadChannelKeyring(env) : null
@@ -44,7 +44,7 @@ export async function backfillSupportRouting({
     try {
       return await db.transaction(async (tx) => {
     await lockRoutingCutover(tx)
-    await onRoutingLock?.()
+    await onRoutingLock?.(tx)
     const now = new Date()
     const summary: BackfillSummary = {
       centralGroupsCreated: 0, channelsCreated: 0, policiesCreated: 0, appsChanged: 0, bridgeRetired: false,

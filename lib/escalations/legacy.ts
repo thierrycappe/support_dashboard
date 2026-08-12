@@ -26,7 +26,7 @@ export async function acceptLegacyPayload({
   env?: Env
   scheduleDeliveryWakeup?: () => void
   resolveTargets?: IntakeDependencies['resolveTargets']
-  onRoutingLockAcquired?: () => Promise<void>
+  onRoutingLockAcquired?: (tx: DbTransaction) => Promise<void>
 }): Promise<IntakeResult> {
   const parsedPayload = feedbackIngestSchema.parse(payload)
   if (parsedPayload.app.slug !== authoritativeAppSlug) throw new Error('source app identity mismatch')
@@ -40,7 +40,7 @@ export async function acceptLegacyPayload({
     scheduleDeliveryWakeup,
     beforeAcceptance: async (tx) => {
       await lockRoutingCutover(tx)
-      await onRoutingLockAcquired?.()
+      await onRoutingLockAcquired?.(tx)
     },
     resolveTargets: resolveTargets ?? ((tx, appId, priority) => resolveLegacyTargets(tx, appId, priority, env)),
   })
