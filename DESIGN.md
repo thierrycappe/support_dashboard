@@ -286,10 +286,12 @@ before paint. System leaves the attribute absent and CSS follows
 
 ## Known Drift
 
-| Drift | Where | Reason | Owner | Target |
-|---|---|---|---|---|
-| Legacy metric cards and chart CSS | Existing dashboard and activity pages | Migration belongs to later page tasks | Support portal overhaul | Task 18 onward |
-| Legacy connector copy exposes implementation terms | Existing applications page | Page information architecture is not Task 17 scope | Support portal overhaul | Applications page task |
+No accepted visual or UX-writing drift is currently recorded. Escalations,
+applications, enrollment, teams, access, deliveries, detail timelines, and
+insights use the approved operational ledger patterns and user-language rename
+table. The authenticated release journey verifies desktop, tablet,
+small-screen, keyboard, reduced-motion, and dark-mode behavior without browser
+console errors.
 
 ## Decisions Log
 

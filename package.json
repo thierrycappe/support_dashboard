@@ -1,6 +1,6 @@
 {
   "name": "support-dashboard",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -19,6 +19,7 @@
     "auth:send-password-reset": "tsx scripts/send-password-reset.ts",
     "auth:generate-service-signing-key": "tsx scripts/generate-service-signing-key.ts",
     "load:test:support": "tsx scripts/load-escalations.ts",
+    "verify:support-overhaul": "tsx scripts/verify-support-overhaul.ts",
     "scenario:check": "tsx scripts/check-scenario-drift.ts"
   },
   "dependencies": {

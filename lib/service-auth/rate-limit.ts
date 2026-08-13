@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { isIP } from 'node:net'
 import { sql } from 'drizzle-orm'
 import { getDb, type Db, type DbTransaction } from '@/lib/db'
@@ -61,14 +62,15 @@ export async function consumeServiceRateLimit({
   limit,
   windowMs,
   now = new Date(),
-}: RequiredRateLimit & { tx?: RateLimitExecutor }): Promise<RateLimitDecision> {
-  if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(windowMs) || windowMs < 1 || !scope || !subject) {
+  bucketId = randomUUID(),
+}: RequiredRateLimit & { tx?: RateLimitExecutor; bucketId?: string }): Promise<RateLimitDecision> {
+  if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(windowMs) || windowMs < 1 || !scope || !subject || !bucketId) {
     throw new Error('Invalid service rate limit')
   }
   const windowStart = new Date(Math.floor(now.getTime() / windowMs) * windowMs)
   const result = await tx.execute<{ count: number } & Record<string, unknown>>(sql`
     insert into service_rate_limit_buckets (id, scope, subject, window_start, count, created_at, updated_at)
-      values (${`${scope}:${subject}:${windowStart.getTime()}`}, ${scope}, ${subject}, ${windowStart}, 1, ${now}, ${now})
+      values (${bucketId}, ${scope}, ${subject}, ${windowStart}, 1, ${now}, ${now})
     on conflict (scope, subject, window_start)
       do update set count = service_rate_limit_buckets.count + 1, updated_at = ${now}
     returning count

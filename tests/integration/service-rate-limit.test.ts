@@ -34,6 +34,57 @@ describe('database-backed service rate limits', () => {
     await expect(consumeServiceRateLimit({ tx: getDb(), scope: 'concurrent', subject: 'two', limit: 3, windowMs: 60_000, now })).resolves.toMatchObject({ allowed: true, remaining: 2 })
   })
 
+  it('serializes concurrent first inserts that use distinct bucket row identities', async () => {
+    let releaseFirst!: () => void
+    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let firstInserted!: () => void
+    const firstReady = new Promise<void>((resolve) => { firstInserted = resolve })
+
+    const first = getDb().transaction(async (tx) => {
+      const decision = await consumeServiceRateLimit({
+        tx,
+        scope: 'concurrent-first-insert',
+        subject: 'one',
+        limit: 3,
+        windowMs: 60_000,
+        now,
+        bucketId: 'first-attempt-id',
+      })
+      firstInserted()
+      await holdFirst
+      return decision
+    })
+
+    await firstReady
+    let secondSettled = false
+    const second = consumeServiceRateLimit({
+      tx: getDb(),
+      scope: 'concurrent-first-insert',
+      subject: 'one',
+      limit: 3,
+      windowMs: 60_000,
+      now,
+      bucketId: 'second-attempt-id',
+    }).finally(() => { secondSettled = true })
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(secondSettled).toBe(false)
+    } finally {
+      releaseFirst()
+    }
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { allowed: true, remaining: 2, retryAfterSeconds: 0 },
+      { allowed: true, remaining: 1, retryAfterSeconds: 0 },
+    ])
+    const stored = await getDb().execute<{ count: number; id: string } & Record<string, unknown>>(sql`
+      select id, count from service_rate_limit_buckets
+       where scope = 'concurrent-first-insert' and subject = 'one'
+    `)
+    expect(stored.rows).toEqual([{ id: 'first-attempt-id', count: 2 }])
+  })
+
   it('publishes route dimensions including token sustained and burst limits', () => {
     expect(serviceRateLimits).toEqual({
       enrollmentInvitation: { limit: 10, windowMs: 60 * 60_000 },

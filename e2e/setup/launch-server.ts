@@ -4,6 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { dockerServerArguments, SUPPORT_E2E_IMAGE } from './container-launcher'
+import { resolveSupportE2ePort } from './environment'
 
 const sourceDatabaseUrl = approvedTestDatabaseUrl()
 const containerDatabaseUrl = new URL(sourceDatabaseUrl)
@@ -13,7 +14,7 @@ if (containerDatabaseUrl.hostname === '127.0.0.1' || containerDatabaseUrl.hostna
 const runId = randomUUID()
 const containerName = `support-task22-e2e-${runId}`
 const networkName = `support-task22-net-${runId}`
-const port = process.env.PORT?.trim() || '3000'
+const port = resolveSupportE2ePort()
 const runtimeDirectory = resolve(process.cwd(), 'playwright/.runtime')
 const envFile = resolve(runtimeDirectory, `server-${runId}.env`)
 cleanupStaleResources()

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSupportE2eEnvironment, resolveSupportE2eBaseUrl } from '../../e2e/setup/environment'
+import { buildSupportE2eEnvironment, resolveSupportE2eBaseUrl, resolveSupportE2ePort } from '../../e2e/setup/environment'
 import { dockerServerArguments } from '../../e2e/setup/container-launcher'
 
 describe('support Playwright environment safety', () => {
@@ -16,6 +16,11 @@ describe('support Playwright environment safety', () => {
     expect(() => resolveSupportE2eBaseUrl({
       PLAYWRIGHT_BASE_URL: 'https://staging.example.test', ALLOW_SUPPORT_E2E: '1',
     })).toThrow('Refusing support E2E target')
+  })
+
+  it('derives the container port from the validated non-default loopback base URL', () => {
+    expect(resolveSupportE2ePort({ PLAYWRIGHT_BASE_URL: 'http://127.0.0.1:39127' })).toBe('39127')
+    expect(resolveSupportE2ePort({ PLAYWRIGHT_BASE_URL: 'http://localhost' })).toBe('80')
   })
 
   it.each([

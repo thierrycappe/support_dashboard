@@ -27,6 +27,11 @@ export function resolveSupportE2eBaseUrl(env: Environment = process.env): string
   return url.origin
 }
 
+export function resolveSupportE2ePort(env: Environment = process.env): string {
+  const url = new URL(resolveSupportE2eBaseUrl(env))
+  return url.port || (url.protocol === 'https:' ? '443' : '80')
+}
+
 export function buildSupportE2eEnvironment(
   source: Environment,
   overrides: Record<string, string>,

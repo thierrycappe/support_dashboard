@@ -48,5 +48,20 @@ the authoritative proof for the hardened semantics.
   the database was dropped, and ephemeral JWK/certificate material was never
   persisted.
 
-The disposable release fixture must rerun the hardened harness to provide the
-authoritative current live result.
+## Authoritative hardened release evidence
+
+The consolidated Task 24 verifier ran the current hardened harness against a
+fresh, explicitly marked local PostgreSQL database after applying the current
+Drizzle schema and all six support migrations. The self-contained fixture built
+the current production bundle immediately before `next start`, served it
+through a bounded local HTTPS proxy, seeded only randomized rows, and removed
+those exact rows and ephemeral certificate/key files afterward.
+
+- `submitted=550`, `acceptedUnique=500`, `duplicateReplays=50`, `failed=0`
+- `missingReceipts=0`, `missingDeliveryTargets=0`
+- `intakeP95Ms=305`, `firstAttemptP95Ms=352`
+- `throttledRetries=80`, `durationMs=237453`, `maxRetries=30`
+- one exact expected database-channel target and `failureStatuses={}`
+
+The harness exited 0. No load process, Next server, temporary fixture directory,
+or fixture database remained after teardown.
