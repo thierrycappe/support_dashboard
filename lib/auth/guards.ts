@@ -12,3 +12,9 @@ export async function requireAdminUser() {
   if (user.role !== 'ADMIN') redirect('/')
   return user
 }
+
+export async function requireDeliveryRetryUser() {
+  const user = await requireAuthenticatedUser()
+  if (user.role !== 'ADMIN' && user.role !== 'SUPPORT') redirect('/')
+  return user
+}

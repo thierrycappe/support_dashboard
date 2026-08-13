@@ -1,6 +1,6 @@
 {
   "name": "support-dashboard",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,22 +10,30 @@
     "lint": "eslint .",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:push": "drizzle-kit push",
+    "db:migrate:support": "tsx scripts/apply-support-migrations.ts",
+    "routing:backfill": "tsx scripts/backfill-support-routing.ts",
     "auth:hash-password": "tsx scripts/hash-admin-password.ts",
     "auth:seed-admin": "tsx scripts/seed-admin-user.ts",
     "auth:send-password-reset": "tsx scripts/send-password-reset.ts",
+    "auth:generate-service-signing-key": "tsx scripts/generate-service-signing-key.ts",
+    "load:test:support": "tsx scripts/load-escalations.ts",
+    "verify:support-overhaul": "tsx scripts/verify-support-overhaul.ts",
     "scenario:check": "tsx scripts/check-scenario-drift.ts"
   },
   "dependencies": {
     "@auth/core": "^0.41.0",
-    "@neondatabase/serverless": "^1.1.0",
     "drizzle-orm": "^0.45.2",
+    "jose": "^6.2.3",
     "lucide-react": "^0.561.0",
     "nanoid": "^5.1.6",
     "next": "16.2.5",
     "next-auth": "5.0.0-beta.31",
+    "pg": "^8.22.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "undici": "^7.29.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
@@ -34,6 +42,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.1",
     "@types/node": "^25.0.0",
+    "@types/pg": "^8.21.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",

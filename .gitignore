@@ -10,3 +10,6 @@ tsconfig.tsbuildinfo
 .env.local
 .env.*.local
 !.env.example
+.worktrees/
+playwright/.auth/
+playwright/.runtime/

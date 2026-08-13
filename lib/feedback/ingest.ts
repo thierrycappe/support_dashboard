@@ -74,7 +74,7 @@ export function normalizeFeedbackStatus(value: unknown): FeedbackStatus | undefi
   return aliases[normalized]
 }
 
-function normalizeFeedbackPriority(value: unknown): FeedbackPriority | undefined {
+export function normalizeFeedbackPriority(value: unknown): FeedbackPriority | undefined {
   if (typeof value !== 'string') return undefined
   const normalized = normalizeToken(value)
   const aliases: Record<string, FeedbackPriority> = {
@@ -254,6 +254,21 @@ export function getIngestTokenForApp(
 ): string | null {
   // One independently rotatable Encrypted env var per app slug.
   return env[ingestTokenEnvVarForSlug(appSlug)]?.trim() || null
+}
+
+export function getConfiguredAppSlugForIngestToken(
+  token: string,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const prefix = 'SUPPORT_TOWER_INGEST_TOKEN_'
+  const matches = Object.entries(env).flatMap(([key, value]) => {
+    if (!key.startsWith(prefix) || !value?.trim()) return []
+    return constantTimeTokenEquals(token, value.trim())
+      ? [key.slice(prefix.length).toLowerCase().replace(/_/g, '-')]
+      : []
+  })
+
+  return matches.length === 1 ? matches[0] ?? null : null
 }
 
 export function constantTimeTokenEquals(actual: string, expected: string): boolean {

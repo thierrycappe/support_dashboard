@@ -2,6 +2,7 @@ import type { DashboardData } from '@/lib/feedback/dashboard'
 import { getAllowedAdminEmails } from '@/lib/auth/admin'
 import {
   getResendConfig,
+  logResendFailure,
   sendResendEmail,
   type ResendEmail,
 } from '@/lib/email/resend'
@@ -193,25 +194,26 @@ export async function sendDailyOpenTicketReport({
 
   const email = buildDailyReportEmail(data, config, env)
 
+  let response: Response
+
   try {
-    const response = await sendResendEmail({ config, email, fetchImpl })
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '')
-      logger.warn('Support tower daily email report failed', {
-        status: response.status,
-        body,
-        openTickets: data.totals.open,
-      })
-      return 'failed'
-    }
-
-    return 'sent'
-  } catch (error) {
-    logger.warn('Support tower daily email report failed', {
-      error,
-      openTickets: data.totals.open,
+    response = await sendResendEmail({ config, email, fetchImpl })
+  } catch {
+    await logResendFailure({
+      logger,
+      message: 'Support tower daily email report failed',
     })
     return 'failed'
   }
+
+  if (!response.ok) {
+    await logResendFailure({
+      logger,
+      message: 'Support tower daily email report failed',
+      response,
+    })
+    return 'failed'
+  }
+
+  return 'sent'
 }
