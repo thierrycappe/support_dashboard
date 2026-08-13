@@ -2,6 +2,7 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { expect, test } from '../../helpers/fixtures'
+import { waitForApplicationDeliveriesToSettle } from '../../helpers/delivery-settlement'
 
 test('SCN-010 — legacy POST and full pull both create durable delivery work', async ({ request, scenario }) => {
   const runtime = JSON.parse(await readFile(resolve(process.cwd(), 'playwright/.runtime/source-pull.json'), 'utf8')) as {
@@ -48,6 +49,7 @@ test('SCN-010 — legacy POST and full pull both create durable delivery work', 
     `, [appId])
     expect(durable.rows.map((row) => row.external_id)).toEqual([`${scenario.id}-direct`, runtime.externalId].sort())
   } finally {
+    await waitForApplicationDeliveriesToSettle({ db: scenario.db, appId })
     await scenario.db.query(`delete from source_apps where id=$1`, [appId])
     await scenario.db.query(`delete from support_groups where id=$1`, [groupId])
   }
