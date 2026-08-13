@@ -411,7 +411,12 @@ pre {
 
 .queue-filters {
   display: grid;
-  grid-template-columns: minmax(12rem, 1.4fr) repeat(3, minmax(9rem, 1fr)) auto;
+  grid-template-columns:
+    minmax(12rem, 1.35fr)
+    minmax(12rem, 1.15fr)
+    minmax(7.5rem, 0.65fr)
+    minmax(10rem, 1fr)
+    auto;
   align-items: end;
   gap: var(--space-3);
   margin-bottom: var(--space-6);
@@ -419,6 +424,15 @@ pre {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
+}
+
+.queue-filters .field {
+  min-width: 0;
+}
+
+.queue-filters :is(input, select) {
+  width: 100%;
+  min-width: 0;
 }
 
 .queue-filter-actions {
