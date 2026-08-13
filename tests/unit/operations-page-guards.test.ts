@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   listTeamOperations: vi.fn(),
   getApplications: vi.fn(),
   getApplicationDetail: vi.fn(),
+  getApplicationCredentialInventory: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/guards', () => ({
@@ -22,12 +23,17 @@ vi.mock('@/lib/delivery/queries', () => ({ getDeliveryOperations: mocks.getDeliv
 vi.mock('@/lib/audit/queries', () => ({ getAuditHistory: mocks.getAuditHistory, listCredentialSecurity: mocks.listCredentialSecurity }))
 vi.mock('@/lib/auth/users', () => ({ listSupportUsers: mocks.listSupportUsers }))
 vi.mock('@/lib/routing/groups', () => ({ listTeamOperations: mocks.listTeamOperations }))
-vi.mock('@/lib/apps/queries', () => ({ getApplications: mocks.getApplications, getApplicationDetail: mocks.getApplicationDetail }))
+vi.mock('@/lib/apps/queries', () => ({
+  getApplications: mocks.getApplications,
+  getApplicationDetail: mocks.getApplicationDetail,
+  getApplicationCredentialInventory: mocks.getApplicationCredentialInventory,
+}))
 vi.mock('@/auth', () => ({ auth: vi.fn() }))
 vi.mock('@/components/AppShell', () => ({ default: ({ children }: { children: unknown }) => children }))
 vi.mock('@/components/deliveries/DeliveryTable', () => ({ default: () => null }))
 vi.mock('@/components/teams/GroupEditor', () => ({ default: () => null }))
 vi.mock('@/components/teams/ChannelEditor', () => ({ default: () => null }))
+vi.mock('@/components/apps/CredentialLifecycle', () => ({ default: () => null }))
 vi.mock('next/link', () => ({ default: ({ children }: { children: unknown }) => children }))
 
 import DeliveriesPage from '@/app/deliveries/page'
@@ -51,6 +57,7 @@ beforeEach(() => {
   mocks.listCredentialSecurity.mockResolvedValue([])
   mocks.listTeamOperations.mockResolvedValue({ groups: [], channels: [] })
   mocks.getApplications.mockResolvedValue([])
+  mocks.getApplicationCredentialInventory.mockResolvedValue([])
   mocks.getApplicationDetail.mockResolvedValue({
     id: 'app-1', name: 'Amber checkout', slug: 'amber', baseUrl: null, environment: 'test', status: 'ACTIVE', enrollmentStatus: 'PENDING', credentialMode: 'PUBLIC_KEY', groupName: 'Platform', openCount: 0, lastAuthenticatedAt: null, slugLocked: true, minimumPriority: null, urgentCentralCopy: null, fallbackToCentral: null, owners: [], invitation: null,
   })
@@ -69,6 +76,7 @@ describe('operations page access boundaries', () => {
     await expect(ApplicationDetailPage({ params: Promise.resolve({ id: 'app-1' }) })).rejects.toThrow('NEXT_REDIRECT')
     expect(mocks.getApplications).not.toHaveBeenCalled()
     expect(mocks.getApplicationDetail).not.toHaveBeenCalled()
+    expect(mocks.getApplicationCredentialInventory).not.toHaveBeenCalled()
   })
 
   it('denies unauthenticated delivery inspection before loading operations data', async () => {
@@ -89,5 +97,6 @@ describe('operations page access boundaries', () => {
     expect(mocks.listSupportUsers).toHaveBeenCalledTimes(2)
     expect(mocks.getApplications).toHaveBeenCalledOnce()
     expect(mocks.getApplicationDetail).toHaveBeenCalledOnce()
+    expect(mocks.getApplicationCredentialInventory).toHaveBeenCalledWith('app-1')
   })
 })

@@ -8,6 +8,7 @@ import { POST as confirmRoute } from '@/app/api/v1/credentials/rotate/confirm/ro
 import { issueServiceAccessToken } from '@/lib/service-auth/access-tokens'
 import { cleanupExpiredAssertionReplays } from '@/lib/service-auth/assertions'
 import {
+  beginAdminCredentialRotation,
   beginCredentialRotation,
   confirmCredentialRotation,
   getActiveCredential,
@@ -16,6 +17,7 @@ import {
 } from '@/lib/service-auth/credentials'
 import { publicJwkThumbprint } from '@/lib/service-auth/jwk'
 import { requireTestDatabaseUrl } from './helpers/database'
+import { getApplicationCredentialInventory } from '@/lib/apps/queries'
 
 process.env.DATABASE_URL = requireTestDatabaseUrl()
 process.env.SUPPORT_TOWER_PUBLIC_URL = 'https://support.example.test'
@@ -46,6 +48,13 @@ beforeAll(async () => {
 beforeEach(async () => {
   await getDb().execute(sql`truncate table source_apps, support_groups, support_settings cascade`)
   await getDb().execute(sql`
+    insert into support_users (id, email, name, role, status, password_hash, created_at, updated_at)
+    values
+      ('support-admin', 'rotation-admin@example.test', 'Rotation admin', 'ADMIN', 'ACTIVE', 'test-not-a-real-hash', ${now}, ${now}),
+      ('support-user', 'rotation-user@example.test', 'Rotation user', 'SUPPORT', 'ACTIVE', 'test-not-a-real-hash', ${now}, ${now})
+    on conflict (id) do update set status = 'ACTIVE', updated_at = excluded.updated_at
+  `)
+  await getDb().execute(sql`
     insert into source_apps (id, slug, name, environment, status, enrollment_status, credential_mode, created_at, updated_at)
     values (${appId}, ${appId}, 'Rotation app', 'test', 'ACTIVE', 'ACTIVE', 'PUBLIC_KEY', ${now}, ${now})
   `)
@@ -58,6 +67,70 @@ beforeEach(async () => {
 afterAll(async () => { await closeDbPool() })
 
 describe('overlapping credential rotation', () => {
+  it('lets an administrator stage a public key without provider access, then requires the connector new-key proof before overlap', async () => {
+    const correlationId = randomUUID()
+    const begun = await beginAdminCredentialRotation({
+      db: getDb(), appId, parentCredentialId: currentCredentialId, nextPublicJwk: nextJwk,
+      actorId: 'support-admin', correlationId, now,
+    })
+
+    const staged = await getDb().execute<{
+      status: string; publicJwk: unknown; replay: string; actorType: string; actorId: string
+    } & Record<string, unknown>>(sql`
+      select credential.status, credential.public_jwk as "publicJwk", replay.assertion_jti as replay,
+             audit.actor_type as "actorType", audit.actor_id as "actorId"
+        from app_credentials credential
+        join service_assertion_replays replay on replay.credential_id = credential.id
+        join audit_events audit on audit.subject_id = credential.id
+       where credential.id = ${begun.credentialId}
+         and replay.assertion_jti like 'rotation-challenge:%'
+         and audit.action = 'SERVICE_CREDENTIAL_ROTATION_BEGUN'
+    `)
+    expect(staged.rows[0]).toMatchObject({
+      status: 'PENDING', publicJwk: nextJwk,
+      replay: `rotation-challenge:${digest(begun.challenge)}`,
+      actorType: 'USER', actorId: 'support-admin',
+    })
+    expect(JSON.stringify(staged.rows[0])).not.toContain(begun.challenge)
+    await expect(getActiveCredential({ db: getDb(), credentialId: begun.credentialId, now })).resolves.toBeNull()
+
+    await confirmCredentialRotation({
+      db: getDb(), principal: principal(), credentialId: begun.credentialId, challenge: begun.challenge,
+      signature: await challengeSignature(begun.credentialId, begun.challenge, nextKeys.privateKey),
+      overlapSeconds: 3_600, correlationId: randomUUID(), now,
+    })
+    await expect(getActiveCredential({ db: getDb(), credentialId: currentCredentialId, now })).resolves.not.toBeNull()
+    await expect(getActiveCredential({ db: getDb(), credentialId: begun.credentialId, now })).resolves.not.toBeNull()
+
+    await revokeCredential({
+      db: getDb(), appId, credentialId: currentCredentialId, actorId: 'support-admin',
+      actorType: 'USER', correlationId: randomUUID(), now,
+    })
+    await expect(getActiveCredential({ db: getDb(), credentialId: currentCredentialId, now })).resolves.toBeNull()
+    await expect(getActiveCredential({ db: getDb(), credentialId: begun.credentialId, now })).resolves.not.toBeNull()
+    const revokedBy = await getDb().execute<{ revokedByUserId: string | null } & Record<string, unknown>>(sql`
+      select revoked_by_user_id as "revokedByUserId" from app_credentials where id = ${currentCredentialId}
+    `)
+    expect(revokedBy.rows[0]?.revokedByUserId).toBe('support-admin')
+    await expect(getApplicationCredentialInventory(appId, getDb(), now)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: currentCredentialId, status: 'REVOKED', health: 'REVOKED', canRotateFrom: false, canRevoke: false }),
+      expect.objectContaining({ id: begun.credentialId, status: 'ACTIVE', health: 'ACTIVE', canRotateFrom: true, canRevoke: false }),
+    ]))
+  })
+
+  it('rejects an admin-assisted rotation against a non-active parent or malformed public JWK', async () => {
+    await expect(beginAdminCredentialRotation({
+      db: getDb(), appId, parentCredentialId: 'missing-parent', nextPublicJwk: nextJwk,
+      actorId: 'support-admin', correlationId: randomUUID(), now,
+    })).rejects.toMatchObject({ code: 'CREDENTIAL_NOT_FOUND' })
+    await expect(beginAdminCredentialRotation({
+      db: getDb(), appId, parentCredentialId: currentCredentialId,
+      nextPublicJwk: { ...nextJwk, d: 'private-key-material' },
+      actorId: 'support-admin', correlationId: randomUUID(), now,
+    })).rejects.toMatchObject({ code: 'INVALID_PROOF' })
+    expect(await count(sql`select count(*)::int as count from app_credentials where status = 'PENDING'`)).toBe(0)
+  })
+
   it('persists only a five-minute challenge digest, confirms new-key possession, and caps overlap at seven days', async () => {
     const proof = await rotationProof(nextJwk, 'nonce-lifecycle')
     const begun = await beginCredentialRotation({
@@ -374,17 +447,17 @@ describe('overlapping credential rotation', () => {
   it('revokes immediately, refuses the last active key, and serializes concurrent revocations', async () => {
     await seedCredential('rotation-second', otherJwk, 'ACTIVE')
     const settled = await Promise.allSettled([
-      revokeCredential({ db: getDb(), appId, credentialId: currentCredentialId, actorId: appId, correlationId: randomUUID(), now }),
-      revokeCredential({ db: getDb(), appId, credentialId: 'rotation-second', actorId: appId, correlationId: randomUUID(), now }),
+      revokeCredential({ db: getDb(), appId, credentialId: currentCredentialId, actorId: appId, actorType: 'APPLICATION', correlationId: randomUUID(), now }),
+      revokeCredential({ db: getDb(), appId, credentialId: 'rotation-second', actorId: appId, actorType: 'APPLICATION', correlationId: randomUUID(), now }),
     ])
     expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
     expect(await count(sql`select count(*)::int as count from app_credentials where source_app_id = ${appId} and status = 'ACTIVE'`)).toBe(1)
     const last = await activeCredentialId()
-    await expect(revokeCredential({ db: getDb(), appId, credentialId: last, actorId: appId, correlationId: randomUUID(), now }))
+    await expect(revokeCredential({ db: getDb(), appId, credentialId: last, actorId: appId, actorType: 'APPLICATION', correlationId: randomUUID(), now }))
       .rejects.toMatchObject({ code: 'LAST_ACTIVE_CREDENTIAL' })
 
     await getDb().execute(sql`update source_apps set status = 'PAUSED' where id = ${appId}`)
-    await expect(revokeCredential({ db: getDb(), appId, credentialId: last, actorId: appId, correlationId: randomUUID(), now })).resolves.toBe(true)
+    await expect(revokeCredential({ db: getDb(), appId, credentialId: last, actorId: appId, actorType: 'APPLICATION', correlationId: randomUUID(), now })).resolves.toBe(true)
     await expect(getActiveCredential({ db: getDb(), credentialId: last, now })).resolves.toBeNull()
   })
 
@@ -422,7 +495,7 @@ describe('overlapping credential rotation', () => {
       update source_apps set status = ${appStatus}, enrollment_status = ${enrollmentStatus} where id = ${appId}
     `)
     const operation = revokeCredential({
-      db: getDb(), appId, credentialId: currentCredentialId, actorId: appId, correlationId: randomUUID(), now,
+      db: getDb(), appId, credentialId: currentCredentialId, actorId: appId, actorType: 'APPLICATION', correlationId: randomUUID(), now,
     })
     if (permitted) await expect(operation).resolves.toBe(true)
     else await expect(operation).rejects.toMatchObject({ code: 'LAST_ACTIVE_CREDENTIAL' })

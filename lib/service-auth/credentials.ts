@@ -177,6 +177,81 @@ export async function beginCredentialRotation({
   }
 }
 
+/**
+ * Registers a connector-owned public key for an administrator. The returned
+ * challenge is the only secret-like value and is never stored in plaintext;
+ * activation still requires confirmCredentialRotation with the connector's
+ * current access token and the new private-key signature.
+ */
+export async function beginAdminCredentialRotation({
+  db = getDb(), appId, parentCredentialId, nextPublicJwk, actorId, correlationId, now = new Date(),
+}: {
+  db?: Db
+  appId: string
+  parentCredentialId: string
+  nextPublicJwk: unknown
+  actorId: string
+  correlationId: string
+  now?: Date
+}): Promise<RotationChallenge> {
+  const nextJwk = safePublicJwk(nextPublicJwk, 'INVALID_PROOF')
+  const nextThumbprint = publicJwkThumbprint(nextJwk)
+  const credentialId = randomUUID()
+  const challenge = randomBytes(32).toString('base64url')
+  const expiresAt = new Date(now.getTime() + ROTATION_CHALLENGE_TTL_MS)
+
+  try {
+    return await db.transaction(async (tx) => {
+      const app = (await tx.execute<AppRow & Record<string, unknown>>(sql`
+        select id, status, enrollment_status as "enrollmentStatus", credential_mode as "credentialMode"
+          from source_apps where id = ${appId} for update
+      `)).rows[0]
+      const current = (await tx.execute<CredentialRow & Record<string, unknown>>(sql`
+        select id, source_app_id as "sourceAppId", public_jwk as "publicJwk", status,
+               valid_from as "validFrom", valid_until as "validUntil", revoked_at as "revokedAt"
+          from app_credentials where id = ${parentCredentialId} for update
+      `)).rows[0]
+      if (!isUsableApp(app) || !isActiveCredential(current, appId, now)) {
+        throw new RotationError('CREDENTIAL_NOT_FOUND')
+      }
+
+      await expireAndPruneRotations({
+        tx, appId, correlationId, now, actorType: 'USER', actorId,
+      })
+      const duplicate = await tx.execute(sql`
+        select 1 from app_credentials where public_key_thumbprint = ${nextThumbprint} limit 1
+      `)
+      if (duplicate.rows[0]) throw new RotationError('DUPLICATE_CREDENTIAL')
+      const existing = await tx.execute(sql`
+        select 1 from app_credentials
+         where source_app_id = ${appId} and status = 'PENDING' and valid_until > ${now}
+         limit 1
+      `)
+      if (existing.rows[0]) throw new RotationError('ROTATION_IN_PROGRESS')
+
+      await tx.execute(sql`
+        insert into app_credentials
+          (id, source_app_id, public_jwk, public_key_thumbprint, status, valid_from, valid_until, rotation_parent_id, created_at)
+        values
+          (${credentialId}, ${appId}, ${JSON.stringify(nextJwk)}::jsonb, ${nextThumbprint}, 'PENDING', ${now}, ${expiresAt}, ${current.id}, ${now})
+      `)
+      await tx.execute(sql`
+        insert into service_assertion_replays (id, credential_id, assertion_jti, expires_at, created_at)
+        values (${randomUUID()}, ${credentialId}, ${`${CHALLENGE_REPLAY_PREFIX}${digest(challenge)}`}, ${expiresAt}, ${now})
+      `)
+      await appendAuditEvent({
+        db: tx, actorType: 'USER', actorId, correlationId, reason: 'Administrator assisted application credential rotation',
+        action: 'SERVICE_CREDENTIAL_ROTATION_BEGUN', subjectType: 'app_credential', subjectId: credentialId,
+        metadata: { parentCredentialId: current.id }, now,
+      })
+      return { credentialId, challenge, expiresAt }
+    })
+  } catch (error) {
+    if (isThumbprintUniqueViolation(error)) throw new RotationError('DUPLICATE_CREDENTIAL')
+    throw error
+  }
+}
+
 export async function confirmCredentialRotation({
   db = getDb(), principal, credentialId, challenge, signature, overlapSeconds, correlationId, now = new Date(),
   afterActivated, afterAuditAppended,
@@ -290,8 +365,10 @@ export async function revokeCredential({
       || app.enrollmentStatus === 'PAUSED'
       || app.enrollmentStatus === 'REVOKED'
     if (targetIsActive && activeCount <= 1 && !appCanHaveNoActiveCredential) throw new RotationError('LAST_ACTIVE_CREDENTIAL')
+    const revokedByUserId = actorType === 'USER' ? actorId : null
     await tx.execute(sql`
-      update app_credentials set status = 'REVOKED', revoked_at = ${now}, valid_until = ${now}
+      update app_credentials set status = 'REVOKED', revoked_at = ${now}, valid_until = ${now},
+             revoked_by_user_id = ${revokedByUserId}
        where id = ${credentialId}
     `)
     await afterRevoked?.()
@@ -391,12 +468,15 @@ function digest(value: string): string {
 }
 
 async function expireAndPruneRotations({
-  tx, appId, correlationId, now, afterExpiredRotationsAudited, afterPrunedRotationDeleted,
+  tx, appId, correlationId, now, actorType = 'APPLICATION', actorId = appId,
+  afterExpiredRotationsAudited, afterPrunedRotationDeleted,
 }: {
   tx: DbTransaction
   appId: string
   correlationId: string
   now: Date
+  actorType?: AuditActorType
+  actorId?: string
   afterExpiredRotationsAudited?: () => Promise<void>
   afterPrunedRotationDeleted?: () => Promise<void>
 }): Promise<void> {
@@ -410,7 +490,7 @@ async function expireAndPruneRotations({
   `)
   for (const credential of expired.rows) {
     await appendAuditEvent({
-      db: tx, actorType: 'APPLICATION', actorId: appId, correlationId, reason: 'Pending credential rotation expired',
+      db: tx, actorType, actorId, correlationId, reason: 'Pending credential rotation expired',
       action: 'SERVICE_CREDENTIAL_ROTATION_EXPIRED', subjectType: 'app_credential', subjectId: credential.id, now,
     })
   }
@@ -427,7 +507,7 @@ async function expireAndPruneRotations({
   `)
   for (const credential of prunable.rows) {
     await appendAuditEvent({
-      db: tx, actorType: 'APPLICATION', actorId: appId, correlationId, reason: 'Expired credential rotation pruned by retention policy',
+      db: tx, actorType, actorId, correlationId, reason: 'Expired credential rotation pruned by retention policy',
       action: 'SERVICE_CREDENTIAL_ROTATION_PRUNED', subjectType: 'app_credential', subjectId: credential.id, now,
     })
     await tx.execute(sql`

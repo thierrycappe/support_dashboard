@@ -31,6 +31,22 @@ export interface ApplicationDetail extends ApplicationListRow {
   invitation: null | { id: string; prefix: string; status: 'AVAILABLE' | 'CONSUMED' | 'REVOKED' | 'EXPIRED'; expiresAt: Date; consumedAt: Date | null }
 }
 
+export type ApplicationCredentialHealth = 'ACTIVE' | 'OVERLAP' | 'PENDING' | 'EXPIRED' | 'REVOKED'
+
+export interface ApplicationCredentialInventoryRow {
+  id: string
+  status: string
+  health: ApplicationCredentialHealth
+  validFrom: string
+  validUntil: string | null
+  revokedAt: string | null
+  createdAt: string
+  parentCredentialId: string | null
+  thumbprint: string
+  canRotateFrom: boolean
+  canRevoke: boolean
+}
+
 export async function getApplications(db: Db = getDb()): Promise<ApplicationListRow[]> {
   const approved = canonicalApprovedTriageSql(sql`ticket.triage`)
   const result = await db.execute<ApplicationListRow & Record<string, unknown>>(sql`
@@ -95,6 +111,66 @@ export async function getApplicationDetail(id: string, db: Db = getDb(), now = n
   }
 }
 
+export async function getApplicationCredentialInventory(
+  appId: string,
+  db: Db = getDb(),
+  now = new Date(),
+): Promise<ApplicationCredentialInventoryRow[]> {
+  const result = await db.execute<{
+    id: string
+    status: string
+    validFrom: Date | string
+    validUntil: Date | string | null
+    revokedAt: Date | string | null
+    createdAt: Date | string
+    parentCredentialId: string | null
+    thumbprint: string
+    appStatus: string
+    enrollmentStatus: string
+  } & Record<string, unknown>>(sql`
+    select credential.id, credential.status, credential.valid_from as "validFrom",
+           credential.valid_until as "validUntil", credential.revoked_at as "revokedAt",
+           credential.created_at as "createdAt", credential.rotation_parent_id as "parentCredentialId",
+           credential.public_key_thumbprint as thumbprint, app.status as "appStatus",
+           app.enrollment_status as "enrollmentStatus"
+      from app_credentials credential
+      join source_apps app on app.id = credential.source_app_id
+     where credential.source_app_id = ${appId}
+     order by credential.created_at desc, credential.id desc
+  `)
+  const projected = result.rows.map((row) => {
+    const validFrom = requiredDate(row.validFrom)
+    const validUntil = asDate(row.validUntil)
+    const revokedAt = asDate(row.revokedAt)
+    const isActive = row.status === 'ACTIVE' && !revokedAt && validFrom <= now && (!validUntil || validUntil > now)
+    const health: ApplicationCredentialHealth = revokedAt || row.status === 'REVOKED'
+      ? 'REVOKED'
+      : row.status === 'PENDING'
+        ? validUntil && validUntil > now ? 'PENDING' : 'EXPIRED'
+        : row.status === 'EXPIRED' || (validUntil !== null && validUntil <= now)
+          ? 'EXPIRED'
+          : isActive && validUntil
+            ? 'OVERLAP'
+            : 'ACTIVE'
+    return { row, validFrom, validUntil, revokedAt, isActive, health }
+  })
+  const activeCount = projected.filter(({ isActive }) => isActive).length
+  return projected.map(({ row, validFrom, validUntil, revokedAt, isActive, health }) => ({
+    id: row.id,
+    status: row.status,
+    health,
+    validFrom: validFrom.toISOString(),
+    validUntil: validUntil?.toISOString() ?? null,
+    revokedAt: revokedAt?.toISOString() ?? null,
+    createdAt: requiredDate(row.createdAt).toISOString(),
+    parentCredentialId: row.parentCredentialId,
+    thumbprint: row.thumbprint,
+    canRotateFrom: isActive,
+    canRevoke: health !== 'REVOKED' && (!isActive || activeCount > 1
+      || row.appStatus === 'PAUSED' || row.enrollmentStatus === 'PAUSED' || row.enrollmentStatus === 'REVOKED'),
+  }))
+}
+
 export async function createApplicationEnrollment({
   db = getDb(), actorId, correlationId, name, slug, baseUrl, environment, ownerIds,
   minimumPriority, urgentCentralCopy, fallbackToCentral, now = new Date(),
@@ -124,3 +200,4 @@ export async function createApplicationEnrollment({
 }
 
 function asDate(value: Date | string | null): Date | null { return value === null ? null : value instanceof Date ? value : new Date(value) }
+function requiredDate(value: Date | string): Date { return value instanceof Date ? value : new Date(value) }

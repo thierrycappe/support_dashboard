@@ -1446,6 +1446,62 @@ pre {
   gap: var(--space-4);
 }
 
+.credential-ledger,
+.credential-rotation-form,
+.credential-challenge {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.credential-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.1fr) minmax(150px, 0.7fr) minmax(190px, 1fr) auto;
+  align-items: start;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.credential-row:last-child {
+  border-bottom: 0;
+}
+
+.credential-identity,
+.credential-health,
+.credential-context,
+.credential-revoke-form {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.credential-identity code,
+.credential-context code,
+.credential-challenge-value {
+  overflow-wrap: anywhere;
+}
+
+.credential-health .ui-badge {
+  justify-self: start;
+}
+
+.credential-rotation-form,
+.credential-challenge {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+}
+
+.credential-rotation-form {
+  max-width: 760px;
+}
+
+.credential-actions {
+  align-items: center;
+}
+
 .operations-section {
   min-width: 0;
   margin-top: var(--space-8);
@@ -1775,6 +1831,15 @@ pre {
     width: 100%;
   }
 
+  .credential-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .credential-actions .ui-button {
+    width: 100%;
+  }
+
   .queue-pagination {
     justify-content: stretch;
   }
@@ -1821,7 +1886,8 @@ pre {
   }
 
   .group-row,
-  .channel-row {
+  .channel-row,
+  .credential-row {
     grid-template-columns: 1fr;
     gap: var(--space-3);
   }
