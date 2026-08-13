@@ -121,3 +121,31 @@ All database-backed commands used the approved disposable localhost database `su
 ### Concerns
 
 - Next development mode logs an existing server/client timezone hydration warning on delivery timestamps because the host and isolated container use different time zones. It does not alter the production-path assertions, but timestamp formatting should use an explicit shared time zone in a later UI hardening pass.
+
+## Fix Round 2 — deterministic delivery timestamps
+
+### Root cause and implementation
+
+- The release verifier reproduced React hydration failure in `DeliveryTable`: its client component created `Intl.DateTimeFormat` without `timeZone`, so the isolated server rendered UTC while a Europe/Paris browser hydrated the same instant as CEST.
+- Configured the existing compact `en` medium-date/short-time formatter with `timeZone: 'UTC'` and added the visible factual `UTC` suffix. This matches the established delivery timeline treatment, keeps the operational ledger scannable, and produces identical server/client text without suppressing hydration warnings.
+
+### RED evidence
+
+- Added a retained component regression with the hand-derived instant `2026-08-12T13:40:00.000Z` and expected display `Aug 12, 2026, 1:40 PM UTC`.
+- `npx vitest run tests/components/delivery-operations.test.tsx` — RED, 1 failed / 4 passed. The Europe/Paris process rendered `Aug 12, 2026, 3:40 PM`, proving the test catches the missing timezone rather than a fixture or selector failure.
+
+### GREEN evidence
+
+- `npx vitest run tests/components/delivery-operations.test.tsx` — PASS, 1 file / 5 tests.
+- `TEST_DATABASE_URL=<approved> npx playwright test e2e/scenarios/control-tower/SCN-007.spec.ts --project=chromium` — PASS, auth plus SCN-007 2/2 in 12.4 seconds; the original server/browser output contained no hydration mismatch.
+- `npm run test:run` — PASS, 50 files / 369 tests.
+- `npm run typecheck` — PASS.
+- `npm run lint` — PASS.
+- `npm run build` — PASS, optimized production build and route generation completed.
+- `git diff --check` — PASS.
+
+### Scope and self-review
+
+- Changed only `components/deliveries/DeliveryTable.tsx`, `tests/components/delivery-operations.test.tsx`, and this report.
+- The semantic `<time dateTime="...">` retains the exact ISO instant. The visible timezone is explicit, and no `suppressHydrationWarning` or client-only rendering escape hatch was added.
+- Concurrent Task 24, rate-limit, deadlock, verifier, environment, package, documentation, and progress changes remain unstaged.

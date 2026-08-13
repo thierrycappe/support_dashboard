@@ -9,7 +9,7 @@ import EmptyState from '@/components/ui/EmptyState'
 import type { ActionState } from '@/app/deliveries/actions'
 import type { DeliveryOperationsRow, DeliveryOperationsView } from '@/lib/delivery/queries'
 
-const date = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' })
+const date = new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })
 type RetryAction = (state: ActionState, formData: FormData) => Promise<ActionState>
 
 export default function DeliveryTable({
@@ -33,7 +33,7 @@ export default function DeliveryTable({
           { key: 'channelName', header: 'Channel', render: (row) => <div><strong>{row.channelName}</strong><span className="table-secondary">{row.destination}</span></div> },
           { key: 'status', header: 'State', render: (row) => <Badge tone={statusTone(row.status)}>{label(row.status)}</Badge> },
           { key: 'attemptCount', header: 'Attempts' },
-          { key: 'nextAttemptAt', header: view === 'history' ? 'Recorded' : 'Next attempt', render: (row) => <time dateTime={(view === 'history' ? row.createdAt : row.nextAttemptAt)?.toISOString()}>{view === 'history' ? date.format(row.createdAt) : row.nextAttemptAt ? date.format(row.nextAttemptAt) : 'No scheduled retry'}</time> },
+          { key: 'nextAttemptAt', header: view === 'history' ? 'Recorded' : 'Next attempt', render: (row) => <time dateTime={(view === 'history' ? row.createdAt : row.nextAttemptAt)?.toISOString()}>{view === 'history' ? `${date.format(row.createdAt)} UTC` : row.nextAttemptAt ? `${date.format(row.nextAttemptAt)} UTC` : 'No scheduled retry'}</time> },
           { key: 'sanitizedCause', header: 'Delivery context', render: (row) => <DeliveryContext row={row} retryAction={retryAction} /> },
         ]}
       />

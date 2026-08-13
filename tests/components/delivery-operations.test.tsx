@@ -55,6 +55,20 @@ describe('delivery operations table', () => {
     expect(screen.queryByText('maya.chen@ops.example.test')).toBeNull()
   })
 
+  it('renders an explicit UTC timestamp that is identical during server render and hydration', () => {
+    render(
+      <DeliveryTable
+        view="history"
+        rows={[{ ...failedDelivery, status: 'SENT', retryAvailable: false }]}
+        deadLetterCount={0}
+        routingIncidentCount={0}
+      />,
+    )
+
+    const recorded = screen.getByText('Aug 12, 2026, 1:40 PM UTC')
+    expect(recorded).toHaveAttribute('datetime', '2026-08-12T13:40:00.000Z')
+  })
+
   it('teaches an empty operational view without a generic no-data message', () => {
     render(<DeliveryTable view="retrying" rows={[]} deadLetterCount={0} routingIncidentCount={0} />)
 
