@@ -164,10 +164,10 @@ Resend is used for three distinct flows:
 Authentication uses `RESEND_API_KEY`; `RESEND_FROM` and optional
 `SUPPORT_TOWER_DIGEST_EMAIL_TO` select sender/recipients. HTTP status and a
 provider message ID may be retained. Durable escalation delivery stores only a
-sanitized failure class. The older daily-digest and password-reset helpers log a
-failed provider status and response body (or caught transport error); they do
-not intentionally log the outbound message, but that broader error logging is a
-known gap below.
+sanitized failure class. Daily-digest and password-reset failures also emit only
+a fixed failure class, HTTP status, and validated provider request ID. They
+discard response bodies and do not log recipient identity, user/application
+context, raw exceptions, or transport internals.
 
 ### Pushover
 
@@ -271,4 +271,3 @@ delivery cron on Vercel:
 | Legacy bearer ingest cannot prove a named business owner | Medium | Migrate each connector to public-key enrollment and version-1 triage; retain configured-slug binding until retirement. | Application owners | Per-app migration |
 | Feedback and audit retention/deletion periods are not encoded | Medium | Approve retention periods, add bounded purge/export procedures, and test legal-hold exceptions. | Product + security | Before external reporter expansion |
 | Secret access/rotation cadence is organizational, not enforced in code | Low | Record owners and rotation dates in the deployment secret manager; rehearse JWK and channel-key rotation. | Platform owner | Before production cutover |
-| Digest/password-reset failure logging is less strict than durable delivery logging | Medium | Replace provider response bodies/raw caught errors with status and sanitized error classes. | Platform owner | Before production cutover |
