@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.4.0] - 2026-08-12
+
+### Nouvelles fonctionnalités
+
+- Mise en place du modèle à deux niveaux : le responsable métier de chaque
+  application filtre les retours, puis transmet au support central uniquement
+  les bugs et demandes d'évolution approuvés avec une attribution de triage.
+- Ajout de l'inscription administrateur par invitation à usage unique et de
+  l'authentification applicative par clés publiques Ed25519. Les connecteurs
+  conservent leur clé privée, obtiennent des jetons courts et peuvent renouveler
+  leurs clés avec chevauchement contrôlé, pause et révocation.
+- Ajout de l'API versionnée `POST /api/v1/escalations` avec identité liée au
+  justificatif cryptographique, contrat strict, limite de taille,
+  `Idempotency-Key`, détection des conflits et limites de débit persistées.
+- Ajout du routage vers l'équipe technique de l'application, de la copie
+  centrale pour les urgences et du repli central lorsque l'application ne
+  possède aucune cible valide.
+- Ajout d'une boîte d'envoi PostgreSQL durable pour les canaux e-mail,
+  Pushover et webhook : baux renouvelables, reprise après abandon, tentatives
+  chronologiques, délais de nouvelle tentative bornés et action manuelle de
+  relance.
+- Ajout des vues opérationnelles Escalations, Applications, Livraisons,
+  Équipes, Accès et Insights, avec inscription d'application, politiques de
+  notification, état textuel des canaux et chronologie de livraison.
+
+### Sécurité
+
+- Chiffrement des configurations de canaux en AES-256-GCM avec trousseau
+  versionné; les secrets et configurations déchiffrées ne sont jamais placés
+  dans la boîte d'envoi ni les journaux d'audit.
+- Protection des assertions contre le rejeu, contrôle transactionnel des
+  invitations et limites de débit, erreurs publiques stables avec identifiant
+  de corrélation et vérification SSRF des webhooks avec résolution DNS épinglée.
+- Minimisation par canal : Pushover ne reçoit jamais l'identité du rapporteur;
+  l'e-mail et le webhook ne la reçoivent qu'après activation explicite sur un
+  canal authentifié.
+
+### Fiabilité et compatibilité
+
+- L'acceptation, le ticket, la génération d'événement, le résultat de routage,
+  les livraisons et l'audit sont désormais validés dans une seule transaction;
+  aucun appel à un fournisseur n'a lieu avant le commit.
+- L'ancien endpoint bearer et le pull complet restent compatibles, mais passent
+  par le même pipeline durable pendant la migration des applications.
+- La mise en production des routes transactionnelles exige une
+  `DATABASE_URL` PostgreSQL poolée et un `DATABASE_POOL_MAX` compatible avec le
+  budget de connexions du fournisseur.
+
+### Interface
+
+- Refonte responsive selon le système « quiet operational ledger » : modes
+  clair, sombre et système, tableaux accessibles au clavier, états associés à
+  du texte, pagination bornée et messages d'erreur sans détails
+  d'infrastructure.
+
 ## [0.3.2] - 2026-06-02
 
 ### Améliorations

@@ -2,25 +2,65 @@
 
 Strategic constitution applied to every artefact this project produces. Sits with DESIGN.md (visual + UX writing), SECURITY.md (data policy), CONTRIBUTING.md (engineering), CLAUDE.md (AI behaviour), ARCHITECTURE.md (patterns). Each rule below ends with `Enforced by:` so a future agent can audit drift.
 
-> **Note on enforcement reality (2026-05-06).** TypeScript, Drizzle schema design, Vitest, Playwright scenario drift checks, and code review are real today. Lint sweeps and design-review automation are aspirational until wired into CI.
+> **Enforcement reality (2026-08-13).** TypeScript, Drizzle constraints,
+> runtime schemas, Vitest, live-PostgreSQL integration tests, scenario-drift
+> checks, ESLint, production builds, authenticated Playwright journeys,
+> migration rehearsal, the 500-escalation burst, and code review are active.
+> The consolidated 0.4.0 verifier passed against disposable infrastructure.
 
 ## Register
 
 Register: `internal-tool`.
 
-This project produces a support control tower for operators who need one place to see open feedback tickets coming from several applications. It is a repository of links and mirrored statuses, not the operational dashboard where ticket work happens. It is not a customer-facing helpdesk, a marketing site, or a public issue tracker.
+This project is an internal support control tower for approved bugs and feature
+requests from many applications. It is the technical support team's operational
+queue for ownership, routing, delivery recovery, and audit evidence. Source
+applications remain the reporter-facing systems and own their workflow status;
+the tower does not become a customer helpdesk, marketing site, or public issue
+tracker.
+
+The capacity target is 100–500 newly connected applications per year, normally
+20–50 approved escalations per day and at most 500 on a launch day. Enrollment
+therefore cannot require a portal redeployment, and alert delivery cannot rely
+on one in-request provider call.
 
 ## Users
 
-Default users are product/support operators and builder-admins who know the applications being monitored. They work mostly on desktop, scan queues repeatedly, and need source-app context more than decorative presentation.
+Every source application has a non-technical business owner who receives raw
+reporter feedback first, filters noise, and escalates only a true bug or feature
+request with canonical triage attribution. That two-tier boundary prevents the
+central team from becoming the first-line inbox.
 
-Secondary users are source-app maintainers who need a clear ingest contract to connect their app feedback loops. Any external reporter-facing surface is a separate product decision.
+Primary portal users are technical support operators and builder-admins. They
+work mostly on desktop, scan dense queues repeatedly, need app ownership and
+delivery health at a glance, and need authenticated source/reporter context for
+diagnosis.
+
+Secondary users are source-app maintainers. An admin invites their application;
+the connector generates its own key, enrolls without sharing a private key,
+rotates credentials without coordinated downtime, and submits the versioned
+escalation contract. Any external reporter-facing surface remains a separate
+product decision.
 
 ## Job to Be Done
 
-Primary job: collect open bug and evolution tickets from feedback loops across applications, normalize them, and let an operator jump to the original app dashboard where the work happens.
+Primary job: accept only business-owner-approved bugs and feature requests,
+persist acceptance and delivery work atomically, route each escalation to the
+application's technical owner with central fallback, and let support recover
+failed delivery without losing source context.
 
-Success is observable when a source app can POST a ticket to `/api/feedback/ingest`, the ticket is upserted without duplication, the dashboard shows it in the open queue under the correct application, and the ticket title links to the original feedback dashboard in the source app.
+Success is observable when an administrator enrolls an application with a
+one-time invitation; its connector exchanges an Ed25519 assertion for a
+short-lived scoped token; a versioned, idempotent escalation is accepted once;
+the approved ticket, immutable event, routes, outbox work, and audit evidence
+commit together; the queue shows the correct application/owner; and retryable
+provider failures recover visibly. Legacy push and full pull remain compatible
+through the same durable intake while applications migrate.
+
+The product is not successful if an unapproved ticket appears in central
+queues, an app can claim another app's identity, an accepted escalation lacks
+delivery work or a visible routing incident, a provider error changes source
+status, or reporter context leaves through a channel that did not opt in.
 
 | Rule | Detail | Enforced by |
 |---|---|---|

@@ -172,4 +172,73 @@ describe('daily report notifications', () => {
     expect(body.subject).toBe('Support Tower daily report: 3 open')
     expect(body.to).toEqual(['thierry@example.com'])
   })
+
+  it('logs only a fixed status envelope when Resend rejects the digest', async () => {
+    const logger = { warn: vi.fn() }
+    const providerBody = JSON.stringify({
+      message: 'recipient thierry@example.com rejected',
+      transport: 'smtp-internal.example',
+    })
+
+    const result = await sendDailyOpenTicketReport({
+      data: dashboardData,
+      env: {
+        RESEND_API_KEY: 're_private-key',
+        RESEND_FROM: 'Support Tower <support@example.com>',
+        SUPPORT_DASHBOARD_ADMIN_EMAILS: 'thierry@example.com',
+      },
+      fetchImpl: vi.fn(async () =>
+        new Response(providerBody, {
+          status: 422,
+          headers: { 'x-request-id': 'req_daily_123' },
+        }),
+      ),
+      logger,
+    })
+
+    expect(result).toBe('failed')
+    expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+      'Support tower daily email report failed',
+      {
+        failureClass: 'PROVIDER_REJECTED',
+        status: 422,
+        requestId: 'req_daily_123',
+      },
+    )
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('thierry@example.com')
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('smtp-internal')
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('re_private-key')
+  })
+
+  it('logs only a fixed transport envelope when digest dispatch throws', async () => {
+    const logger = { warn: vi.fn() }
+
+    const result = await sendDailyOpenTicketReport({
+      data: dashboardData,
+      env: {
+        RESEND_API_KEY: 're_private-key',
+        RESEND_FROM: 'Support Tower <support@example.com>',
+        SUPPORT_DASHBOARD_ADMIN_EMAILS: 'thierry@example.com',
+      },
+      fetchImpl: vi.fn(async () => {
+        throw new Error(
+          'connect ECONNREFUSED smtp-internal.example with re_private-key',
+        )
+      }),
+      logger,
+    })
+
+    expect(result).toBe('failed')
+    expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+      'Support tower daily email report failed',
+      {
+        failureClass: 'TRANSPORT_FAILURE',
+        status: null,
+        requestId: null,
+      },
+    )
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('ECONNREFUSED')
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('smtp-internal')
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('re_private-key')
+  })
 })

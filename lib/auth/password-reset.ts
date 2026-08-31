@@ -3,7 +3,11 @@ import { nanoid } from 'nanoid'
 import { and, eq, gt, isNull } from 'drizzle-orm'
 import { getDb, hasDatabaseUrl } from '@/lib/db'
 import { passwordResetTokens } from '@/lib/db/schema'
-import { getResendConfig, sendResendEmail } from '@/lib/email/resend'
+import {
+  getResendConfig,
+  logResendFailure,
+  sendResendEmail,
+} from '@/lib/email/resend'
 import { getTowerPublicUrl } from '@/lib/notifications/pushover'
 import { hashPassword } from './password'
 import {
@@ -123,31 +127,32 @@ export async function requestPasswordResetEmail({
     userName: user.name,
   })
 
+  let response: Response
+
   try {
-    const response = await sendResendEmail({
+    response = await sendResendEmail({
       config: resend,
       email: emailPayload,
       fetchImpl,
     })
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '')
-      logger.warn('Support tower password reset email failed', {
-        status: response.status,
-        body,
-        userId: user.id,
-      })
-      return 'failed'
-    }
-
-    return 'sent'
-  } catch (error) {
-    logger.warn('Support tower password reset email failed', {
-      error,
-      userId: user.id,
+  } catch {
+    await logResendFailure({
+      logger,
+      message: 'Support tower password reset email failed',
     })
     return 'failed'
   }
+
+  if (!response.ok) {
+    await logResendFailure({
+      logger,
+      message: 'Support tower password reset email failed',
+      response,
+    })
+    return 'failed'
+  }
+
+  return 'sent'
 }
 
 export async function isPasswordResetTokenValid(token: string): Promise<boolean> {

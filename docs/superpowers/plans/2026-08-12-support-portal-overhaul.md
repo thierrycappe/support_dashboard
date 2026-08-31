@@ -1619,11 +1619,19 @@ git commit -m "feat: establish support portal design system"
 - Create: `lib/escalations/queries.ts`
 - Create: `lib/escalations/search-params.ts`
 - Modify: `app/page.tsx`
+- Modify: `app/globals.css`
 - Create: `components/escalations/EscalationFilters.tsx`
 - Create: `components/escalations/EscalationTable.tsx`
+- Modify: `lib/feedback/links.ts`
+- Modify: `lib/db/schema.ts`
+- Create: `drizzle/0006_escalation_queue_delivery_lookup.sql`
+- Modify: `scripts/apply-support-migrations.ts`
 - Create: `tests/unit/escalation-search-params.test.ts`
+- Modify: `tests/unit/feedback-links.test.ts`
 - Create: `tests/integration/escalation-queries.test.ts`
+- Modify: `tests/integration/schema-migration.test.ts`
 - Create: `tests/components/escalation-table.test.tsx`
+- Modify: `tests/components/design-contract.test.ts`
 
 **Interfaces:**
 - Produces: `getEscalationQueue(input): EscalationQueuePage`, URL-stable filters, and opaque cursor.

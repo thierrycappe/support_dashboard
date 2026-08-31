@@ -1,14 +1,16 @@
 import { defineConfig, devices } from '@playwright/test'
+import { resolve } from 'node:path'
+import { resolveSupportE2eBaseUrl } from './e2e/setup/environment'
 
-const PORT = process.env.PORT || '3000'
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${PORT}`
+const BASE_URL = resolveSupportE2eBaseUrl()
+const AUTH_FILE = resolve(process.cwd(), 'playwright/.auth/admin.json')
 
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : 4,
+  workers: 1,
   reporter: [
     ['html'],
     ['list', { printSteps: true }],
@@ -20,6 +22,14 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
 
+  webServer: {
+    command: 'exec node_modules/.bin/tsx e2e/setup/launch-server.ts',
+    url: BASE_URL,
+    reuseExistingServer: false,
+    timeout: 120_000,
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 30_000 },
+  },
+
   projects: [
     {
       name: 'setup',
@@ -27,19 +37,20 @@ export default defineConfig({
     },
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      testMatch: /SCN-0(?:0[5-9]|10)\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'], storageState: AUTH_FILE },
       dependencies: ['setup'],
     },
     {
       name: 'mobile-chrome',
-      use: { ...devices['Pixel 5'] },
-      testMatch: /mobile|smoke\//,
+      use: { ...devices['Pixel 5'], storageState: AUTH_FILE },
+      testMatch: /SCN-009\.spec\.ts/,
       dependencies: ['setup'],
     },
     {
       name: 'mobile-safari',
-      use: { ...devices['iPhone 13'] },
-      testMatch: /mobile|smoke\//,
+      use: { ...devices['iPhone 13'], storageState: AUTH_FILE },
+      testMatch: /SCN-009\.spec\.ts/,
       dependencies: ['setup'],
     },
   ],

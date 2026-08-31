@@ -1,13 +1,11 @@
 import { NextResponse } from 'next/server'
 import {
-  constantTimeTokenEquals,
   feedbackIngestSchema,
   getBearerToken,
-  getIngestTokenForApp,
-  ingestFeedbackTicket,
+  getConfiguredAppSlugForIngestToken,
 } from '@/lib/feedback/ingest'
 import { hasDatabaseUrl } from '@/lib/db'
-import { notifyTicketCreated } from '@/lib/notifications/pushover'
+import { acceptLegacyPayload, legacyResult } from '@/lib/escalations/legacy'
 
 export async function POST(request: Request) {
   const token = getBearerToken(request.headers)
@@ -24,10 +22,13 @@ export async function POST(request: Request) {
     )
   }
 
-  const expectedToken = getIngestTokenForApp(parsed.data.app.slug)
-
-  if (!expectedToken || !constantTimeTokenEquals(token, expectedToken)) {
+  const authoritativeAppSlug = getConfiguredAppSlugForIngestToken(token)
+  if (!authoritativeAppSlug) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  if (parsed.data.app.slug !== authoritativeAppSlug) {
+    return NextResponse.json({ error: 'Source app identity mismatch' }, { status: 409 })
   }
 
   if (!hasDatabaseUrl()) {
@@ -37,10 +38,11 @@ export async function POST(request: Request) {
     )
   }
 
-  const result = await ingestFeedbackTicket(parsed.data)
-  if (result.created) {
-    await notifyTicketCreated({ payload: parsed.data, result })
-  }
+  const result = legacyResult(await acceptLegacyPayload({
+    payload: parsed.data,
+    authoritativeAppSlug,
+    idempotencyKey: request.headers.get('idempotency-key'),
+  }))
 
   return NextResponse.json(result, { status: result.created ? 201 : 200 })
 }
