@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import { mkdtemp, writeFile } from 'node:fs/promises'
@@ -25,6 +25,9 @@ const server = spawn('node_modules/.bin/next', ['dev', '--hostname', '0.0.0.0', 
   env: buildSupportE2eEnvironment(process.env, {
     DATABASE_URL: databaseUrl,
     AUTH_SECRET: randomBytes(32).toString('base64url'),
+    SUPPORT_TOWER_REGISTRATION_TOKEN_SHA256: createHash('sha256').update('task11-fictional-provisioning-token-for-local-tests').digest('hex'),
+    SUPPORT_TOWER_REGISTRATION_ACTOR_ID: 'task22-admin',
+    SUPPORT_TOWER_REGISTRATION_TEAM_ID: 'team_Task22',
     SUPPORT_TOWER_ACCESS_TOKEN_PRIVATE_JWK: JSON.stringify(await exportJWK(portalKeys.privateKey)),
     SUPPORT_TOWER_PUBLIC_URL: 'https://support.e2e.test',
     [legacyTokenKey]: 'task22-fictional-legacy-token',

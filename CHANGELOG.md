@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0] - 2026-09-11
+
+### Nouvelles fonctionnalités
+
+- Ajout d’une API d’inscription pour les agents de confiance, avec création atomique de l’application, des propriétaires et des identifiants à clé publique.
+- Prise en charge des tentatives répétées sans doublon ni remplacement des identifiants existants, avec séparation des environnements Vercel.
+- Documentation de la compétence partagée Claude/Codex pour l’inscription, la configuration et la vérification des applications.
+
 ## [0.5.0] - 2026-09-11
 
 ### Nouvelles fonctionnalités

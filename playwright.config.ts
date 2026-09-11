@@ -37,7 +37,7 @@ export default defineConfig({
     },
     {
       name: 'chromium',
-      testMatch: /SCN-0(?:0[5-9]|10)\.spec\.ts/,
+      testMatch: /SCN-0(?:0[5-9]|1[01])\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], storageState: AUTH_FILE },
       dependencies: ['setup'],
     },
