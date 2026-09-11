@@ -5,7 +5,7 @@ area: control-tower
 status: active
 last_synced: 2026-09-11
 linked_spec: e2e/scenarios/control-tower/SCN-005.spec.ts
-spec_hash: 3095d61c
+spec_hash: 218a6e77
 ---
 
 # SCN-005 — Enroll an application with a one-time invitation
@@ -39,3 +39,6 @@ spec_hash: 3095d61c
 
 - Only administrators can perform these actions.
 - Active, suspended, or deleted applications cannot be resubmitted.
+
+- Delete confirmation focuses its checkbox; Cancel restores focus to Delete application.
+- Multiple replacement invitations have uniquely labelled headings and values.

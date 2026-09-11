@@ -1,3 +1,4 @@
+import { IntakeError } from '@/lib/escalations/errors'
 import { z } from 'zod'
 import {
   feedbackIngestSchema,
@@ -206,6 +207,10 @@ export async function pullSourceApp({
       if (ingestResult.created) result.created += 1
       else result.updated += 1
     } catch (error) {
+      if (error instanceof IntakeError && error.code === 'APPLICATION_UNAVAILABLE') {
+        result.errors.push('APPLICATION_UNAVAILABLE')
+        break
+      }
       const message = error instanceof SourceIdentityMismatchError ? 'SOURCE_IDENTITY_MISMATCH' : 'INGEST_FAILED'
       result.errors.push(`${payload.ticket.externalId}: ${message}`)
       logger.warn('Source pull ingest failed', {

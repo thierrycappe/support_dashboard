@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0] - 2026-09-11
+
+### Nouvelles fonctionnalités
+
+- Ajout du renouvellement des invitations pour les applications en attente depuis la liste et la fiche de l’application.
+- Ajout de la suspension et de la réactivation des applications, avec blocage des nouvelles soumissions pendant la suspension.
+- Ajout de la suppression avec confirmation et révocation des accès, tout en conservant l’historique des tickets et des événements d’audit.
+
+### Améliorations
+
+- Gestion du focus clavier lors de la confirmation de suppression et libellés accessibles uniques pour les invitations.
+- Signalement distinct des applications suspendues ou supprimées pendant la synchronisation.
+
 ## [0.4.0] - 2026-08-12
 
 ### Nouvelles fonctionnalités

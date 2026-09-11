@@ -1,4 +1,4 @@
-// scaffold:scenario:SCN-005:3095d61c
+// scaffold:scenario:SCN-005:218a6e77
 import { test, expect } from '../../helpers/fixtures'
 
 test('SCN-005 — an administrator enrolls an application and sees its invitation once', async ({ page, scenario }) => {
@@ -13,8 +13,8 @@ test('SCN-005 — an administrator enrolls an application and sees its invitatio
   await page.getByRole('button', { name: 'Continue to alerts' }).click()
   await page.getByRole('button', { name: 'Create invitation' }).click()
 
-  const invitationId = page.getByRole('definition').filter({ has: page.locator('code') }).first()
-  const invitationSecret = page.getByRole('definition').filter({ has: page.locator('code') }).nth(1)
+  const invitationId = page.getByLabel('Invitation ID', { exact: true })
+  const invitationSecret = page.getByLabel('Invitation secret', { exact: true })
   await expect(page.getByRole('heading', { name: 'Invitation created' })).toBeVisible()
   await expect(invitationId).not.toBeEmpty()
   await expect(invitationSecret).not.toBeEmpty()
@@ -33,7 +33,7 @@ test('SCN-005 — an administrator enrolls an application and sees its invitatio
   const row = page.getByRole('row').filter({ has: page.getByRole('link', { name, exact: true }) })
   await row.getByRole('button', { name: 'Resubmit enrollment' }).click()
   await expect(row.getByRole('heading', { name: 'Invitation created' })).toBeVisible()
-  const replacement = await row.getByRole('definition').filter({ has: page.locator('code') }).nth(1).textContent()
+  const replacement = await row.getByLabel('Invitation secret', { exact: true }).textContent()
   expect(replacement).not.toBe(secret)
   await row.getByRole('checkbox', { name: /stored this invitation/ }).check()
   await row.getByRole('button', { name: 'Hide invitation' }).click()
