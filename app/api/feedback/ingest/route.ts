@@ -6,6 +6,7 @@ import {
 } from '@/lib/feedback/ingest'
 import { hasDatabaseUrl } from '@/lib/db'
 import { acceptLegacyPayload, legacyResult } from '@/lib/escalations/legacy'
+import { IntakeError } from '@/lib/escalations/errors'
 
 export async function POST(request: Request) {
   const token = getBearerToken(request.headers)
@@ -38,11 +39,18 @@ export async function POST(request: Request) {
     )
   }
 
-  const result = legacyResult(await acceptLegacyPayload({
-    payload: parsed.data,
-    authoritativeAppSlug,
-    idempotencyKey: request.headers.get('idempotency-key'),
-  }))
+  try {
+    const result = legacyResult(await acceptLegacyPayload({
+      payload: parsed.data,
+      authoritativeAppSlug,
+      idempotencyKey: request.headers.get('idempotency-key'),
+    }))
 
-  return NextResponse.json(result, { status: result.created ? 201 : 200 })
+    return NextResponse.json(result, { status: result.created ? 201 : 200 })
+  } catch (error) {
+    if (error instanceof IntakeError && error.code === 'APPLICATION_UNAVAILABLE') {
+      return NextResponse.json({ error: 'Application is suspended or deleted' }, { status: 403 })
+    }
+    throw error
+  }
 }

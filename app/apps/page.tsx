@@ -1,3 +1,5 @@
+import ApplicationLifecycle from '@/components/apps/ApplicationLifecycle'
+import { applicationLifecycleAction } from '@/app/apps/actions'
 import Link from 'next/link'
 import type { Route } from 'next'
 import AppShell from '@/components/AppShell'
@@ -22,6 +24,8 @@ export default async function AppsPage() {
       { key: 'name', header: 'Application', render: (app) => <div><Link href={`/apps/${app.id}` as Route}>{app.name}</Link><div className="subtle">{app.slug}</div></div> },
       { key: 'groupName', header: 'Technical group' }, { key: 'environment', header: 'Environment' },
       { key: 'enrollmentStatus', header: 'Enrollment', render: (app) => <Badge tone={app.enrollmentStatus === 'ACTIVE' ? 'success' : 'neutral'}>{label(app.enrollmentStatus)}</Badge> },
+      { key: 'status', header: 'Status', render: (app) => <Badge tone={app.status === 'PAUSED' ? 'warning' : 'success'}>{app.status === 'PAUSED' ? 'Suspended' : 'Active'}</Badge> },
+      { key: 'id', header: 'Actions', render: (app) => <ApplicationLifecycle app={app} action={applicationLifecycleAction} /> },
       { key: 'openCount', header: 'Open escalations' },
       { key: 'lastAuthenticatedAt', header: 'Last authenticated', render: (app) => app.lastAuthenticatedAt ? date.format(app.lastAuthenticatedAt) : 'Never' },
     ]} />

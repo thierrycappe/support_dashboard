@@ -1,4 +1,4 @@
-export type IntakeErrorCode = 'IDEMPOTENCY_CONFLICT'
+export type IntakeErrorCode = 'IDEMPOTENCY_CONFLICT' | 'APPLICATION_UNAVAILABLE'
 
 export class IntakeError extends Error {
   readonly code: IntakeErrorCode

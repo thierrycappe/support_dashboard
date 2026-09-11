@@ -57,6 +57,7 @@ export async function getApplications(db: Db = getDb()): Promise<ApplicationList
       from source_apps app
       left join support_groups group_row on group_row.id=app.technical_group_id
       left join feedback_tickets ticket on ticket.source_app_id=app.id
+     where app.enrollment_status <> 'REVOKED'
      group by app.id, group_row.name
      order by app.name, app.id
   `)
@@ -84,7 +85,7 @@ export async function getApplicationDetail(id: string, db: Db = getDb(), now = n
       left join support_groups group_row on group_row.id=app.technical_group_id
       left join app_notification_policies policy on policy.source_app_id=app.id
       left join lateral (select * from app_enrollment_grants where source_app_id=app.id order by created_at desc, id desc limit 1) grant_row on true
-     where app.id=${id}
+     where app.id=${id} and app.enrollment_status <> 'REVOKED'
   `)
   const row = result.rows[0]
   if (!row) return null

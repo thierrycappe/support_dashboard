@@ -1,4 +1,4 @@
-// scaffold:scenario:SCN-005:5f419cf3
+// scaffold:scenario:SCN-005:3095d61c
 import { test, expect } from '../../helpers/fixtures'
 
 test('SCN-005 — an administrator enrolls an application and sees its invitation once', async ({ page, scenario }) => {
@@ -27,5 +27,28 @@ test('SCN-005 — an administrator enrolls an application and sees its invitatio
   await page.getByRole('link', { name: 'View application' }).click()
   await expect(page.getByRole('heading', { name })).toBeVisible()
   await expect(page.getByText(secret!)).toHaveCount(0)
-  await expect(page.getByText('Available')).toBeVisible()
+  await expect(page.getByText('Available', { exact: true })).toBeVisible()
+
+  await page.goto('/apps')
+  const row = page.getByRole('row').filter({ has: page.getByRole('link', { name, exact: true }) })
+  await row.getByRole('button', { name: 'Resubmit enrollment' }).click()
+  await expect(row.getByRole('heading', { name: 'Invitation created' })).toBeVisible()
+  const replacement = await row.getByRole('definition').filter({ has: page.locator('code') }).nth(1).textContent()
+  expect(replacement).not.toBe(secret)
+  await row.getByRole('checkbox', { name: /stored this invitation/ }).check()
+  await row.getByRole('button', { name: 'Hide invitation' }).click()
+  await row.getByRole('link', { name: 'View application' }).click()
+  await expect(page).toHaveURL(/\/apps\/[^/]+$/)
+  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Suspend application' }).click()
+  await expect(page.getByRole('button', { name: 'Resume application' })).toBeVisible()
+  await expect(page.getByText('Suspended', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Resubmit enrollment' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Resume application' }).click()
+  await expect(page.getByRole('button', { name: 'Resubmit enrollment' })).toBeVisible()
+  await page.getByRole('button', { name: 'Delete application' }).click()
+  await page.getByRole('checkbox', { name: `I confirm deletion of ${name}` }).check()
+  await page.getByRole('button', { name: 'Confirm deletion' }).click()
+  await expect(page).toHaveURL(/\/apps$/)
+  await expect(page.getByRole('link', { name, exact: true })).toHaveCount(0)
 })

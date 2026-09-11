@@ -147,6 +147,10 @@ describe('versioned service route contracts', () => {
       ...base, accept: vi.fn(async () => { throw new IntakeError('IDEMPOTENCY_CONFLICT') }),
     })
     expect(await error(conflict)).toEqual([409, 'IDEMPOTENCY_CONFLICT'])
+    const unavailable = await handleEscalation(request('/escalations', escalationBody(), { 'idempotency-key': 'unavailable' }), {
+      ...base, accept: vi.fn(async () => { throw new IntakeError('APPLICATION_UNAVAILABLE') }),
+    })
+    expect(await error(unavailable)).toEqual([403, 'APPLICATION_UNAVAILABLE'])
 
     const oversized = await handleEscalation(new Request('https://tower/api/v1/escalations', {
       method: 'POST', headers: { authorization: 'Bearer token', 'idempotency-key': 'large', 'x-correlation-id': correlationId, 'content-type': 'application/json' }, body: JSON.stringify({ description: 'x'.repeat(300_000) }),

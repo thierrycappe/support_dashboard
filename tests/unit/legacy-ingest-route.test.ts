@@ -8,6 +8,7 @@ vi.mock('@/lib/escalations/legacy', () => ({
 const inlinePushoverTransport = vi.fn()
 vi.mock('@/lib/notifications/pushover', () => ({ sendPushoverMessage: inlinePushoverTransport }))
 
+import { IntakeError } from '@/lib/escalations/errors'
 import { POST } from '@/app/api/feedback/ingest/route'
 import { acceptLegacyPayload } from '@/lib/escalations/legacy'
 
@@ -34,4 +35,14 @@ describe('legacy ingest route', () => {
     await expect(response.json()).resolves.toEqual({ error: 'Source app identity mismatch' })
     expect(acceptLegacyPayload).not.toHaveBeenCalled()
   })
+})
+
+it('returns 403 when lifecycle checks reject a suspended or deleted application', async () => {
+  process.env.SUPPORT_TOWER_INGEST_TOKEN_CASAL_TRACK = 'casal-token'
+  vi.mocked(acceptLegacyPayload).mockRejectedValueOnce(new IntakeError('APPLICATION_UNAVAILABLE'))
+  const response = await POST(new Request('https://tower/api/feedback/ingest', {
+    method: 'POST', headers: { authorization: 'Bearer casal-token', 'content-type': 'application/json' }, body: JSON.stringify(payload),
+  }))
+  expect(response.status).toBe(403)
+  expect(await response.json()).toEqual({ error: 'Application is suspended or deleted' })
 })

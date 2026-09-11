@@ -54,6 +54,7 @@ export async function handleEscalation(request: Request, deps: {
     if (result.result !== 'duplicate') (deps.wakeup ?? scheduleDeliveryWakeup)()
     return publicJson({ ticketId: result.ticketId, result: result.result, acceptedAt: result.acceptedAt.toISOString() }, { status: result.result === 'created' ? 201 : 200 })
   } catch (error) {
+    if (error instanceof IntakeError && error.code === 'APPLICATION_UNAVAILABLE') return publicError(403, error.code, 'Application is suspended or deleted', correlationId)
     if (error instanceof ServiceRateLimitError) return publicError(429, 'RATE_LIMITED', 'Too many requests', correlationId, { 'Retry-After': String(error.retryAfterSeconds) })
     if (error instanceof IntakeError) return publicError(409, 'IDEMPOTENCY_CONFLICT', 'Idempotency key conflicts with an accepted request', correlationId)
     if (error instanceof RequestBodyError || error instanceof z.ZodError) {
