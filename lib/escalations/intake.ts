@@ -84,6 +84,13 @@ export async function acceptEscalation(
 
   const result = await dependencies.db.transaction(async (tx) => {
     await dependencies.beforeAcceptance?.(tx)
+    // Serialize intake with suspension/deletion, including legacy push and pull.
+    const app = (await tx.execute<{ status: string; enrollmentStatus: string }>(sql`
+      select status, enrollment_status as "enrollmentStatus" from source_apps where id=${input.appId} for update
+    `)).rows[0]
+    if (!app || app.status !== 'ACTIVE' || app.enrollmentStatus === 'PAUSED' || app.enrollmentStatus === 'REVOKED') {
+      throw new IntakeError('APPLICATION_UNAVAILABLE')
+    }
     const receipt = await claimReceipt(tx, input, digest, acceptedAt)
     if (receipt.kind === 'duplicate') return receipt.result
     if (receipt.kind === 'conflict') throw new IntakeError('IDEMPOTENCY_CONFLICT')

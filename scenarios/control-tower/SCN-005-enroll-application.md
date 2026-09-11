@@ -3,9 +3,9 @@ id: SCN-005
 title: Enroll an application with a one-time invitation
 area: control-tower
 status: active
-last_synced: 2026-08-13
+last_synced: 2026-09-11
 linked_spec: e2e/scenarios/control-tower/SCN-005.spec.ts
-spec_hash: 5f419cf3
+spec_hash: 218a6e77
 ---
 
 # SCN-005 — Enroll an application with a one-time invitation
@@ -29,3 +29,16 @@ spec_hash: 5f419cf3
 ## Edge case
 
 - Reloading or returning to application detail cannot recover the invitation secret.
+
+## Application lifecycle
+
+1. From Applications, resubmit a pending application and store the replacement invitation. The old invitation is invalid.
+2. Suspend the application. Incoming submissions are blocked while its data remains available.
+3. Resume the application and retain its previous enrollment state.
+4. Confirm Delete application. It disappears from administration and cannot authenticate or receive submissions; ticket and audit history remain.
+
+- Only administrators can perform these actions.
+- Active, suspended, or deleted applications cannot be resubmitted.
+
+- Delete confirmation focuses its checkbox; Cancel restores focus to Delete application.
+- Multiple replacement invitations have uniquely labelled headings and values.

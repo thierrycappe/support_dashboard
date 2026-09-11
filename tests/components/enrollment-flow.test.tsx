@@ -133,3 +133,11 @@ describe('application enrollment flow', () => {
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.enrollment-actions\s*\{[\s\S]*?flex-direction:\s*column/)
   })
 })
+
+it('gives simultaneous invitation reveals unique accessible headings and value labels', () => {
+  render(<><InvitationReveal appId="one" invitationId="grant-one" invitationSecret="secret-one" expiresAt="2026-09-11T12:00:00Z" /><InvitationReveal appId="two" invitationId="grant-two" invitationSecret="secret-two" expiresAt="2026-09-11T12:00:00Z" /></>)
+  const headings = screen.getAllByRole('heading', { name: 'Invitation created' })
+  expect(headings[0].id).not.toBe(headings[1].id)
+  expect(screen.getAllByRole('definition', { name: 'Invitation secret' }).map(element => element.textContent)).toEqual(['secret-one', 'secret-two'])
+  expect(screen.queryByText('Step 4 of 4')).toBeNull()
+})

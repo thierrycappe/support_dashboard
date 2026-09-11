@@ -2,6 +2,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { requireAdminUser } from '@/lib/auth/guards'
 import { setAppPolicy } from '@/lib/routing/policies'
@@ -9,6 +10,37 @@ import { createApplicationEnrollment } from '@/lib/apps/queries'
 import { applicationBaseUrlIssue } from '@/lib/apps/validation'
 import { beginAdminCredentialRotation, revokeCredential } from '@/lib/service-auth/credentials'
 import { validateEd25519PublicJwk } from '@/lib/service-auth/jwk'
+import { ApplicationLifecycleError, changeApplicationLifecycle } from '@/lib/apps/lifecycle'
+
+export type ApplicationLifecycleState = EnrollmentActionState | { status: 'success'; message: string }
+
+export async function applicationLifecycleAction(_previous: ApplicationLifecycleState, formData: FormData): Promise<ApplicationLifecycleState> {
+  const user = await requireAdminUser()
+  const parsed = z.object({
+    appId: z.string().trim().min(1).max(200),
+    operation: z.enum(['resubmit', 'suspend', 'resume', 'delete']),
+  }).safeParse({ appId: formData.get('appId'), operation: formData.get('operation') })
+  if (!parsed.success) return { status: 'error', message: 'Application was not updated. Refresh the page and try again.', fieldErrors: {} }
+  if (parsed.data.operation === 'delete' && formData.get('confirmed') !== 'on') {
+    return { status: 'error', message: 'Confirm deletion before continuing.', fieldErrors: {} }
+  }
+  let result: Awaited<ReturnType<typeof changeApplicationLifecycle>>
+  try {
+    result = await changeApplicationLifecycle({ ...parsed.data, actorId: user.id, correlationId: randomUUID() })
+  } catch (error) {
+    return { status: 'error', message: error instanceof ApplicationLifecycleError ? error.message : 'Application was not updated. Refresh the page and try again.', fieldErrors: {} }
+  }
+  for (const path of ['/apps', `/apps/${parsed.data.appId}`]) {
+    try { revalidatePath(path) } catch { /* The committed result, especially its one-time secret, must survive cache failure. */ }
+  }
+  if (parsed.data.operation === 'delete') redirect('/apps')
+  if (result.invitation) return {
+    status: 'created', appId: parsed.data.appId, invitationId: result.invitation.id,
+    invitationSecret: result.invitation.secret, expiresAt: result.invitation.expiresAt.toISOString(),
+  }
+  const messages = { resubmit: 'Application resubmitted', suspend: 'Application suspended', resume: 'Application resumed', delete: 'Application deleted. Ticket and audit history retained.' }
+  return { status: 'success', message: messages[parsed.data.operation] }
+}
 
 export type ActionState =
   | { status: 'idle' }

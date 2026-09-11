@@ -2,12 +2,15 @@
 
 import Link from 'next/link'
 import type { Route } from 'next'
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import Button from '@/components/ui/Button'
 
 const HISTORY_GUARD_KEY = '__supportInvitationGuard'
 
 export default function InvitationReveal({ appId, invitationId, invitationSecret, expiresAt }: { appId: string; invitationId: string; invitationSecret: string; expiresAt: string }) {
+  const headingId = useId()
+  const invitationIdLabel = useId()
+  const secretLabel = useId()
   const [visible, setVisible] = useState(true)
   const [copied, setCopied] = useState(false)
   const [acknowledged, setAcknowledged] = useState(false)
@@ -51,7 +54,7 @@ export default function InvitationReveal({ appId, invitationId, invitationSecret
       setCopied(true); setAcknowledged(true); setCopyError(false); setLeaveWarning(false)
     } catch { setCopyError(true) }
   }
-  return <section aria-labelledby="invitation-title"><p className="eyebrow">Step 4 of 4</p><h2 id="invitation-title">Invitation created</h2><p>This invitation is shown only on this screen. Store it in the application configuration before leaving.</p>{copyError ? <p className="field-error" role="alert">Invitation was not copied. Select the values and copy them manually.</p> : null}{leaveWarning ? <p className="field-error" role="alert">Store or copy the invitation before leaving this screen.</p> : null}<dl><div><dt>Invitation ID</dt><dd><code>{invitationId}</code></dd></div><div><dt>Invitation secret</dt><dd><code>{invitationSecret}</code></dd></div><div><dt>Expires</dt><dd><time dateTime={expiresAt}>{new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(expiresAt))}</time></dd></div></dl><label className="enrollment-acknowledgement"><input type="checkbox" checked={acknowledged} onChange={(event) => { setAcknowledged(event.target.checked); if (event.target.checked) { setCopyError(false); setLeaveWarning(false) } }} /> I stored this invitation in the application configuration</label><div className="form-actions enrollment-actions"><Button type="button" onClick={copy}>{copied ? 'Invitation copied' : 'Copy invitation'}</Button><Button type="button" variant="secondary" disabled={!acknowledged} onClick={() => setVisible(false)}>Hide invitation</Button></div></section>
+  return <section aria-labelledby={headingId}><h2 id={headingId}>Invitation created</h2><p>This invitation is shown only on this screen. Store it in the application configuration before leaving.</p>{copyError ? <p className="field-error" role="alert">Invitation was not copied. Select the values and copy them manually.</p> : null}{leaveWarning ? <p className="field-error" role="alert">Store or copy the invitation before leaving this screen.</p> : null}<dl><div><dt id={invitationIdLabel}>Invitation ID</dt><dd aria-labelledby={invitationIdLabel}><code>{invitationId}</code></dd></div><div><dt id={secretLabel}>Invitation secret</dt><dd aria-labelledby={secretLabel}><code>{invitationSecret}</code></dd></div><div><dt>Expires</dt><dd><time dateTime={expiresAt}>{new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(expiresAt))}</time></dd></div></dl><label className="enrollment-acknowledgement"><input type="checkbox" checked={acknowledged} onChange={(event) => { setAcknowledged(event.target.checked); if (event.target.checked) { setCopyError(false); setLeaveWarning(false) } }} /> I stored this invitation in the application configuration</label><div className="form-actions enrollment-actions"><Button type="button" onClick={copy}>{copied ? 'Invitation copied' : 'Copy invitation'}</Button><Button type="button" variant="secondary" disabled={!acknowledged} onClick={() => setVisible(false)}>Hide invitation</Button></div></section>
 }
 
 function isHistoryState(value: unknown): value is Record<string, unknown> {

@@ -1,3 +1,4 @@
+import { IntakeError } from '@/lib/escalations/errors'
 import { describe, expect, it, vi } from 'vitest'
 import { validateWebhookTarget } from '@/lib/delivery/webhook-target'
 import {
@@ -508,3 +509,14 @@ describe('pullSourceApp', () => {
 function publicTarget(value: string) {
   return validateWebhookTarget(value, { lookup: async () => ['93.184.216.34'] })
 }
+
+it('stops a suspended or deleted app pull with a distinct result and no per-ticket warnings', async () => {
+  const warn = vi.fn()
+  const accept = vi.fn().mockRejectedValue(new IntakeError('APPLICATION_UNAVAILABLE'))
+  const fetchImpl = vi.fn(async () => Response.json({ tickets: [sampleTicket, sampleTicket] }))
+  const result = await pullSourceApp({ appSlug: 'casal-track', env: envWithCasal, fetchImpl, validateTarget: publicTarget, accept, logger: { warn } })
+  expect(result.errors).toEqual(['APPLICATION_UNAVAILABLE'])
+  expect(result.pulled).toBe(0)
+  expect(accept).toHaveBeenCalledOnce()
+  expect(warn).not.toHaveBeenCalled()
+})
